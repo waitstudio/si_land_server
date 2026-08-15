@@ -22,8 +22,8 @@ async fn health() -> Json<ApiResponse<Health>> {
 }
 
 /// 构建全部路由
-pub fn router() -> Router<AppState> {
+pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/health", get(health))
-        .merge(api::router())
+        .merge(api::router(state))
 }

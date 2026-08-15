@@ -16,4 +16,4 @@ pub mod utils;
 pub use config::AppConfig;
 pub use error::AppError;
 pub use response::{ApiResponse, BizCode};
-pub use state::{build_state, AppState};
+pub use state::{build_state, spawn_scheduler, AppState};

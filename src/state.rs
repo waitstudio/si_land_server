@@ -3,39 +3,121 @@
 use std::sync::Arc;
 
 use crate::config::AppConfig;
+use crate::error::AppError;
 use crate::services::code_store::{CodeStore, InMemoryCodeStore};
+use crate::services::db;
+use crate::services::douyin::client::DouyinEnterClient;
+use crate::services::douyin::live_checker::{HttpLiveChecker, LiveChecker};
+use crate::services::douyin::streamer_resolver::{HttpStreamerResolver, StreamerResolver};
+use crate::services::push::bark::BarkProvider;
+use crate::services::push::provider::PushProvider;
+use crate::services::push::token_store::{PgPushTokenStore, PushTokenStore};
+use crate::services::scheduler::poll_store::{PgPollStore, PollStore};
+use crate::services::scheduler::PollScheduler;
 use crate::services::sms_provider::{MockSmsProvider, SmsProvider};
+use crate::services::subscription_store::{PgSubscriptionStore, SubscriptionStore};
+use crate::services::user_store::{PgUserStore, UserStore};
 
-/// 应用共享状态，通过 axum `State` 注入到 handler。
-///
-/// 持有配置与所有基础设施实现（trait 对象），替换实现时只改 `build_state`。
+/// 应用共享状态
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<AppConfig>,
     pub sms_provider: Arc<dyn SmsProvider>,
     pub code_store: Arc<dyn CodeStore>,
+    pub user_store: Arc<dyn UserStore>,
+    pub subscription_store: Arc<dyn SubscriptionStore>,
+    pub streamer_resolver: Arc<dyn StreamerResolver>,
+    pub live_checker: Arc<dyn LiveChecker>,
+    pub poll_store: Arc<dyn PollStore>,
+    pub push_token_store: Arc<dyn PushTokenStore>,
+    pub push_providers: Vec<Arc<dyn PushProvider>>,
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: AppConfig,
         sms_provider: Arc<dyn SmsProvider>,
         code_store: Arc<dyn CodeStore>,
+        user_store: Arc<dyn UserStore>,
+        subscription_store: Arc<dyn SubscriptionStore>,
+        streamer_resolver: Arc<dyn StreamerResolver>,
+        live_checker: Arc<dyn LiveChecker>,
+        poll_store: Arc<dyn PollStore>,
+        push_token_store: Arc<dyn PushTokenStore>,
+        push_providers: Vec<Arc<dyn PushProvider>>,
     ) -> Self {
         Self {
             config: Arc::new(config),
             sms_provider,
             code_store,
+            user_store,
+            subscription_store,
+            streamer_resolver,
+            live_checker,
+            poll_store,
+            push_token_store,
+            push_providers,
         }
     }
 }
 
-/// 组装默认 AppState（mock 实现）。
+/// 组装默认 AppState（PostgreSQL 持久化实现）
 ///
-/// 切换为真实实现时，在此处替换 `sms_provider` / `code_store` 即可，
-/// 业务层（service / handler）无需改动。
-pub fn build_state(config: AppConfig) -> AppState {
-    let sms_provider: Arc<dyn SmsProvider> = Arc::new(MockSmsProvider);
+/// 启动时：
+/// - 建立 PgPool 并执行建表迁移
+/// - 用 Pg 实现 UserStore / SubscriptionStore / PollStore / PushTokenStore
+/// - 共享 `DouyinEnterClient` 给 resolver / live_checker
+/// - 注册 Bark 推送通道（APNs 等其他通道在此追加）
+pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
+    let pool = db::init_pool(&config.database.url, config.server.db_max_connections).await?;
+    db::migrations::run(&pool).await?;
+
+    let user_store: Arc<dyn UserStore> = Arc::new(PgUserStore::new(pool.clone()));
+    let subscription_store: Arc<dyn SubscriptionStore> = Arc::new(PgSubscriptionStore::new(pool.clone()));
+    let poll_store: Arc<dyn PollStore> = Arc::new(PgPollStore::new(pool.clone()));
+    let push_token_store: Arc<dyn PushTokenStore> = Arc::new(PgPushTokenStore::new(pool));
     let code_store: Arc<dyn CodeStore> = Arc::new(InMemoryCodeStore::new());
-    AppState::new(config, sms_provider, code_store)
+    let sms_provider: Arc<dyn SmsProvider> = Arc::new(MockSmsProvider);
+
+    let douyin_client = Arc::new(DouyinEnterClient::new(Arc::new(config.douyin.clone()))?);
+    let streamer_resolver: Arc<dyn StreamerResolver> =
+        Arc::new(HttpStreamerResolver::new(douyin_client.clone()));
+    let live_checker: Arc<dyn LiveChecker> = Arc::new(HttpLiveChecker::new(douyin_client));
+
+    // 注册推送通道：Bark 默认启用，APNs 等在此追加
+    let mut push_providers: Vec<Arc<dyn PushProvider>> = Vec::new();
+    match BarkProvider::new(config.push.bark_base_url.clone(), config.push.timeout_secs) {
+        Ok(b) => push_providers.push(Arc::new(b)),
+        Err(e) => tracing::warn!("Bark 推送通道初始化失败: {:?}", e),
+    }
+
+    Ok(AppState::new(
+        config,
+        sms_provider,
+        code_store,
+        user_store,
+        subscription_store,
+        streamer_resolver,
+        live_checker,
+        poll_store,
+        push_token_store,
+        push_providers,
+    ))
+}
+
+/// 启动轮询调度器后台任务
+///
+/// 在 main.rs 中调用，把调度器作为独立 tokio task 运行。
+/// 程序退出时 task 被取消，状态已持久化到 DB，重启自动恢复。
+pub fn spawn_scheduler(state: &AppState) {
+    let scheduler = Arc::new(PollScheduler::new(
+        Arc::clone(&state.config),
+        Arc::clone(&state.poll_store),
+        Arc::clone(&state.subscription_store),
+        Arc::clone(&state.live_checker),
+        state.push_providers.clone(),
+        Arc::clone(&state.push_token_store),
+    ));
+    tokio::spawn(scheduler.run());
 }

@@ -9,6 +9,6 @@ use axum::Router;
 use crate::state::AppState;
 
 /// 构建 API 路由
-pub fn router() -> Router<AppState> {
-    Router::new().nest("/api/v1", v1::router())
+pub fn router(state: AppState) -> Router<AppState> {
+    Router::new().nest("/api/v1", v1::router(state))
 }

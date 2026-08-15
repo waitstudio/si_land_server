@@ -17,11 +17,21 @@ impl SmsService {
             return Err(AppError::invalid_param("手机号格式不正确"));
         }
 
+        // 重发冷却检查
+        if let Some(existing) = state.code_store.get(phone).await? {
+            let elapsed = Utc::now().signed_duration_since(existing.created_at);
+            if elapsed.num_seconds() < state.config.sms.resend_cooldown as i64 {
+                return Err(AppError::rate_limit(format!(
+                    "请{}秒后再试",
+                    state.config.sms.resend_cooldown as i64 - elapsed.num_seconds()
+                )));
+            }
+        }
+
         let code = generate_code(state);
         let now = Utc::now();
-        let expire_in = state.config.sms_code_expire_in;
+        let expire_in = state.config.sms.code_expire_in;
 
-        // 先发送再存储：发送失败则不占用存储槽位，用户可直接重发
         state.sms_provider.send(phone, &code).await?;
 
         let sms_code = SmsCode {
@@ -36,14 +46,14 @@ impl SmsService {
     }
 }
 
-/// 生成验证码：配置了 `mock_fixed_code` 则用固定码，否则随机 6 位
+/// 生成验证码：配置了 `mock_fixed_code` 则用固定码，否则随机 N 位
 fn generate_code(state: &AppState) -> String {
-    if let Some(fixed) = &state.config.mock_fixed_code {
+    if let Some(fixed) = &state.config.sms.mock_fixed_code {
         tracing::debug!("使用固定验证码（mock）");
         return fixed.clone();
     }
     let mut rng = rand::thread_rng();
-    (0..6)
+    (0..state.config.sms.code_length)
         .map(|_| rng.gen_range(0..10).to_string())
         .collect()
 }

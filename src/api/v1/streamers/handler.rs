@@ -1,0 +1,96 @@
+//! 主播订阅 handler
+
+use axum::{
+    extract::{Path, Query, State},
+    Extension, Json,
+};
+use serde::Deserialize;
+
+use crate::config::constants;
+use crate::domain::streamer::Streamer;
+use crate::domain::subscription::SubscriptionItem;
+use crate::error::AppError;
+use crate::middleware::auth::UserId;
+use crate::response::ApiResponse;
+use crate::state::AppState;
+
+use super::dto::{CheckLiveResponse, LiveNotifyResponse, PollResponse, SubscribeRequest};
+use super::service::StreamerService;
+
+/// POST /api/v1/streamers
+pub async fn add_subscription(
+    State(state): State<AppState>,
+    Extension(user_id): Extension<UserId>,
+    Json(req): Json<SubscribeRequest>,
+) -> Result<Json<ApiResponse<SubscriptionItem>>, AppError> {
+    let item = StreamerService::subscribe(&state, &user_id.0, &req.douyin_id).await?;
+    Ok(Json(ApiResponse::success(item)))
+}
+
+/// GET /api/v1/streamers
+pub async fn list_subscriptions(
+    State(state): State<AppState>,
+    Extension(user_id): Extension<UserId>,
+) -> Result<Json<ApiResponse<Vec<SubscriptionItem>>>, AppError> {
+    let list = StreamerService::list(&state, &user_id.0).await?;
+    Ok(Json(ApiResponse::success(list)))
+}
+
+/// GET /api/v1/streamers/popular?limit=20
+#[derive(Debug, Deserialize)]
+pub struct PopularQuery {
+    #[serde(default = "default_limit")]
+    pub limit: i64,
+}
+fn default_limit() -> i64 {
+    constants::POPULAR_DEFAULT_LIMIT
+}
+
+pub async fn list_popular(
+    State(state): State<AppState>,
+    Query(q): Query<PopularQuery>,
+) -> Result<Json<ApiResponse<Vec<Streamer>>>, AppError> {
+    let limit = q.limit.clamp(1, constants::POPULAR_MAX_LIMIT);
+    let list = StreamerService::list_popular(&state, limit).await?;
+    Ok(Json(ApiResponse::success(list)))
+}
+
+/// DELETE /api/v1/streamers/:id
+pub async fn remove_subscription(
+    State(state): State<AppState>,
+    Extension(user_id): Extension<UserId>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    StreamerService::unsubscribe(&state, &user_id.0, &id).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+/// POST /api/v1/streamers/:id/check-live
+pub async fn check_live(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<CheckLiveResponse>>, AppError> {
+    let (streamer, msg) = StreamerService::check_live(&state, &id).await?;
+    Ok(Json(ApiResponse::success(CheckLiveResponse {
+        live: streamer.live,
+        streamer,
+        message: msg,
+    })))
+}
+
+/// POST /api/v1/streamers/poll
+pub async fn poll_live(
+    State(state): State<AppState>,
+    Extension(user_id): Extension<UserId>,
+) -> Result<Json<ApiResponse<PollResponse>>, AppError> {
+    let notifies = StreamerService::poll(&state, &user_id.0).await?;
+    let list = notifies
+        .into_iter()
+        .map(|(streamer, message)| LiveNotifyResponse {
+            streamer,
+            live: true,
+            message,
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(PollResponse { notifies: list })))
+}

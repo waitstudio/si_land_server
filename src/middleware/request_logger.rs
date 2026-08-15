@@ -1,10 +1,9 @@
-//! 自定义中间件
+//! 请求日志中间件：记录方法、路径、状态码、耗时
 
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
 
-/// 请求日志中间件：记录方法、路径、状态码、耗时
 pub async fn request_logger(req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let path = req.uri().path().to_string();

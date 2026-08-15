@@ -1,18 +1,21 @@
-//! 认证业务编排：校验验证码、签发 token
+//! 认证业务编排：校验验证码、查找/创建用户、签发 JWT
 
 use chrono::Utc;
 
+use crate::config::constants;
 use crate::domain::user::User;
 use crate::error::AppError;
+use crate::services::jwt;
 use crate::state::AppState;
 use crate::utils::phone::is_valid_phone;
+use crate::utils::time;
 
 use super::dto::LoginResponse;
 
 pub struct AuthService;
 
 impl AuthService {
-    /// 校验验证码并登录，返回登录结果
+    /// 校验验证码并登录，返回登录结果（含 JWT）
     pub async fn login(
         state: &AppState,
         phone: &str,
@@ -22,7 +25,6 @@ impl AuthService {
             return Err(AppError::invalid_param("手机号格式不正确"));
         }
 
-        // 校验验证码
         let stored = state.code_store.get(phone).await?;
         match stored {
             None => Err(AppError::sms_code_invalid("验证码错误或未发送")),
@@ -34,30 +36,41 @@ impl AuthService {
                 if sms_code.code != code {
                     return Err(AppError::sms_code_invalid("验证码错误"));
                 }
-                // 验证通过，移除验证码（一次性）
                 state.code_store.remove(phone).await?;
 
-                // mock：生成 token 与用户信息
-                let user = mock_user(phone);
-                let expires_at = Utc::now().timestamp() + state.config.jwt_expires_hours * 3600;
+                let user = match state.user_store.find_by_phone(phone).await? {
+                    Some(u) => u,
+                    None => state
+                        .user_store
+                        .create(phone, &state.config.sms.default_nickname, "")
+                        .await?,
+                };
+                let _ = state.user_store.touch_login(&user.user_id).await;
+
+                let expires_at =
+                    time::now_ts() + state.config.jwt.expires_hours * 3600;
+                let token = jwt::sign(
+                    &user.user_id,
+                    &state.config.jwt.secret,
+                    state.config.jwt.expires_hours,
+                )?;
+
                 Ok(LoginResponse {
-                    token: format!("mock-token-{}", user.user_id),
-                    token_type: "Bearer".to_string(),
+                    token,
+                    token_type: constants::TOKEN_TYPE.to_string(),
                     expires_at,
                     user,
                 })
             }
         }
     }
-}
 
-/// mock 用户：手机号后 4 位作为 user_id
-fn mock_user(phone: &str) -> User {
-    let user_id = format!("u_{}", &phone[phone.len().saturating_sub(4)..]);
-    User {
-        user_id,
-        phone: phone.to_string(),
-        nickname: "硅基星球用户".to_string(),
-        avatar: "".to_string(),
+    /// 根据当前 token 解析出的 user_id 查询用户信息
+    pub async fn me(state: &AppState, user_id: &str) -> Result<User, AppError> {
+        state
+            .user_store
+            .find_by_id(user_id)
+            .await?
+            .ok_or_else(|| AppError::not_found("用户不存在"))
     }
 }

@@ -4,4 +4,4 @@ mod dto;
 mod handler;
 mod service;
 
-pub use handler::login;
+pub use handler::{login, me};
