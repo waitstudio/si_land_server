@@ -14,10 +14,15 @@ use crate::middleware::auth::UserId;
 use crate::response::ApiResponse;
 use crate::state::AppState;
 
-use super::dto::{CheckLiveResponse, LiveNotifyResponse, PollResponse, SubscribeRequest};
+use super::dto::{
+    CheckLiveResponse, LiveNotifyResponse, PollResponse, SubscribeRequest, WishRequest,
+    WishResponse,
+};
 use super::service::StreamerService;
 
-/// POST /api/v1/streamers
+/// POST /api/v1/app/streamers
+///
+/// 按抖音号订阅（已停用，返回暂不支持）。保留接口兼容旧客户端。
 pub async fn add_subscription(
     State(state): State<AppState>,
     Extension(user_id): Extension<UserId>,
@@ -27,7 +32,30 @@ pub async fn add_subscription(
     Ok(Json(ApiResponse::success(item)))
 }
 
-/// GET /api/v1/streamers
+/// POST /api/v1/app/streamers/:id/subscribe
+///
+/// 按主播 ID 订阅热门主播（主播必须已在热门列表中）。
+pub async fn subscribe_by_id(
+    State(state): State<AppState>,
+    Extension(user_id): Extension<UserId>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<SubscriptionItem>>, AppError> {
+    let item = StreamerService::subscribe_by_id(&state, &user_id.0, &id).await?;
+    Ok(Json(ApiResponse::success(item)))
+}
+
+/// POST /api/v1/app/streamers/wishes
+///
+/// 提交想看意愿：用户输入想看的主播抖音号，按 douyin_id 去重并累加计数。
+pub async fn add_wish(
+    State(state): State<AppState>,
+    Json(req): Json<WishRequest>,
+) -> Result<Json<ApiResponse<WishResponse>>, AppError> {
+    let count = StreamerService::add_wish(&state, &req.douyin_id).await?;
+    Ok(Json(ApiResponse::success(WishResponse { want_count: count })))
+}
+
+/// GET /api/v1/app/streamers
 pub async fn list_subscriptions(
     State(state): State<AppState>,
     Extension(user_id): Extension<UserId>,
@@ -36,7 +64,7 @@ pub async fn list_subscriptions(
     Ok(Json(ApiResponse::success(list)))
 }
 
-/// GET /api/v1/streamers/popular?limit=20
+/// GET /api/v1/app/streamers/popular?limit=20
 #[derive(Debug, Deserialize)]
 pub struct PopularQuery {
     #[serde(default = "default_limit")]
@@ -55,7 +83,7 @@ pub async fn list_popular(
     Ok(Json(ApiResponse::success(list)))
 }
 
-/// DELETE /api/v1/streamers/:id
+/// DELETE /api/v1/app/streamers/:id
 pub async fn remove_subscription(
     State(state): State<AppState>,
     Extension(user_id): Extension<UserId>,
@@ -65,7 +93,7 @@ pub async fn remove_subscription(
     Ok(Json(ApiResponse::success(())))
 }
 
-/// POST /api/v1/streamers/:id/check-live
+/// POST /api/v1/app/streamers/:id/check-live
 pub async fn check_live(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -78,7 +106,7 @@ pub async fn check_live(
     })))
 }
 
-/// POST /api/v1/streamers/poll
+/// POST /api/v1/app/streamers/poll
 pub async fn poll_live(
     State(state): State<AppState>,
     Extension(user_id): Extension<UserId>,

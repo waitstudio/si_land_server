@@ -15,6 +15,7 @@ pub struct AppConfig {
     pub database: DatabaseConfig,
     pub jwt: JwtConfig,
     pub sms: SmsConfig,
+    pub admin: AdminConfig,
     pub douyin: DouyinConfig,
     pub poll: PollConfig,
     pub push: PushConfig,
@@ -47,6 +48,13 @@ pub struct SmsConfig {
     /// 固定验证码（mock 联调用）；为空则随机生成
     pub mock_fixed_code: Option<String>,
     pub default_nickname: String,
+}
+
+/// 管理员后台账号配置（内置单管理员，用户名密码登录）
+#[derive(Debug, Clone)]
+pub struct AdminConfig {
+    pub username: String,
+    pub password: String,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +126,10 @@ impl AppConfig {
                 mock_fixed_code: env::optional("MOCK_FIXED_CODE"),
                 default_nickname: env::or("DEFAULT_USER_NICKNAME", "硅基星球用户"),
             },
+            admin: AdminConfig {
+                username: env::or("ADMIN_USERNAME", "admin"),
+                password: env::or("ADMIN_PASSWORD", "admin123"),
+            },
             douyin: DouyinConfig {
                 http_timeout_secs: env::parse_or("DOUYIN_HTTP_TIMEOUT_SECS", 10),
                 max_redirects: env::parse_or("DOUYIN_MAX_REDIRECTS", 3),
@@ -147,7 +159,7 @@ impl AppConfig {
                 max_concurrency: env::parse_or("POLL_MAX_CONCURRENCY", 4),
                 check_timeout_secs: env::parse_or("POLL_CHECK_TIMEOUT_SECS", 10),
                 interval_live_secs: env::parse_or("POLL_INTERVAL_LIVE_SECS", 60),
-                interval_idle_secs: env::parse_or("POLL_INTERVAL_IDLE_SECS", 300),
+                interval_idle_secs: env::parse_or("POLL_INTERVAL_IDLE_SECS", 60),
                 backoff_base_secs: env::parse_or("POLL_BACKOFF_BASE_SECS", 60),
                 backoff_max_secs: env::parse_or("POLL_BACKOFF_MAX_SECS", 1800),
                 jitter_secs: env::parse_or("POLL_JITTER_SECS", 15),

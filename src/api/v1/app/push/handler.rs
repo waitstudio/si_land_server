@@ -25,7 +25,7 @@ pub struct Affected {
     pub affected: usize,
 }
 
-/// POST /api/v1/push/tokens
+/// POST /api/v1/app/push/tokens
 pub async fn save_token(
     State(state): State<AppState>,
     Extension(user_id): Extension<UserId>,
@@ -35,7 +35,7 @@ pub async fn save_token(
     Ok(Json(ApiResponse::success(Affected { affected: 1 })))
 }
 
-/// GET /api/v1/push/tokens
+/// GET /api/v1/app/push/tokens
 pub async fn list_tokens(
     State(state): State<AppState>,
     Extension(user_id): Extension<UserId>,
@@ -48,7 +48,7 @@ pub async fn list_tokens(
     Ok(Json(ApiResponse::success(list)))
 }
 
-/// DELETE /api/v1/push/tokens/:channel
+/// DELETE /api/v1/app/push/tokens/:channel
 pub async fn delete_token(
     State(state): State<AppState>,
     Extension(user_id): Extension<UserId>,

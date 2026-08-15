@@ -14,6 +14,8 @@ pub trait UserStore: Send + Sync {
     async fn find_by_id(&self, user_id: &str) -> Result<Option<User>, AppError>;
     async fn create(&self, phone: &str, nickname: &str, avatar: &str) -> Result<User, AppError>;
     async fn touch_login(&self, user_id: &str) -> Result<(), AppError>;
+    /// 更新昵称，返回更新后的用户（不存在时返回 None）
+    async fn update_nickname(&self, user_id: &str, nickname: &str) -> Result<Option<User>, AppError>;
 }
 
 /// PostgreSQL 实现
@@ -76,5 +78,17 @@ impl UserStore for PgUserStore {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn update_nickname(&self, user_id: &str, nickname: &str) -> Result<Option<User>, AppError> {
+        let row = sqlx::query_as::<_, User>(
+            r#"UPDATE users SET nickname = $2 WHERE user_id = $1
+               RETURNING user_id, phone, nickname, avatar"#,
+        )
+        .bind(user_id)
+        .bind(nickname)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
     }
 }

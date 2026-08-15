@@ -9,6 +9,7 @@ use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::response::Response;
 
+use crate::config::constants;
 use crate::error::AppError;
 use crate::services::jwt::{extract_bearer, verify};
 use crate::state::AppState;
@@ -37,5 +38,21 @@ pub async fn auth_middleware(
 
     let claims = verify(token, &state.config.jwt.secret)?;
     req.extensions_mut().insert(UserId(claims.sub));
+    Ok(next.run(req).await)
+}
+
+/// 管理员守卫：在 `auth_middleware` 之后挂载，
+/// 校验当前用户为内置管理员，App 端用户 token 无法访问 admin 接口。
+pub async fn admin_guard(
+    axum::Extension(user_id): axum::Extension<UserId>,
+    req: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    if user_id.0 != constants::ADMIN_SUBJECT {
+        return Err(AppError::new(
+            crate::response::BizCode::Unauthorized,
+            "无管理员权限",
+        ));
+    }
     Ok(next.run(req).await)
 }

@@ -20,3 +20,9 @@ pub struct LoginResponse {
     pub expires_at: i64,
     pub user: User,
 }
+
+/// 修改昵称请求
+#[derive(Debug, Deserialize)]
+pub struct UpdateNicknameRequest {
+    pub nickname: String,
+}

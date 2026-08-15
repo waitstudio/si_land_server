@@ -136,12 +136,13 @@ impl SubscriptionStore for PgSubscriptionStore {
     }
 
     async fn list_subscriptions(&self, user_id: &str) -> Result<Vec<SubscriptionItem>, AppError> {
+        // 正在直播的主播排最前，未直播的放后面；两组内部均按订阅时间倒序
         let sql = r#"SELECT s.id, s.sec_uid, s.douyin_id, s.nickname, s.avatar, s.live,
                             s.live_started_at, s.popularity, sub.subscribed_at
                      FROM streamers s
                      JOIN subscriptions sub ON sub.streamer_id = s.id
                      WHERE sub.user_id = $1
-                     ORDER BY sub.subscribed_at DESC"#;
+                     ORDER BY s.live DESC, sub.subscribed_at DESC"#;
         let list = sqlx::query_as::<_, SubscriptionItem>(sql)
             .bind(user_id)
             .fetch_all(&self.pool)
@@ -150,9 +151,9 @@ impl SubscriptionStore for PgSubscriptionStore {
     }
 
     async fn list_popular(&self, limit: i64) -> Result<Vec<Streamer>, AppError> {
+        // 按人气降序返回全部主播（含 0 人气），同人气按最近更新优先
         let sql = format!(
             "SELECT {STREAMER_COLUMNS} FROM streamers \
-             WHERE popularity > 0 \
              ORDER BY popularity DESC, updated_at DESC LIMIT $1"
         );
         let list = sqlx::query_as::<_, Streamer>(&sql)

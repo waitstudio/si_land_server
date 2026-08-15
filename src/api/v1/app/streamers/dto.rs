@@ -11,6 +11,20 @@ pub struct SubscribeRequest {
     pub douyin_id: String,
 }
 
+/// 想看意愿提交请求
+#[derive(Debug, Deserialize)]
+pub struct WishRequest {
+    /// 抖音号
+    pub douyin_id: String,
+}
+
+/// 想看意愿提交响应
+#[derive(Debug, Serialize)]
+pub struct WishResponse {
+    /// 当前想看该主播的总人数
+    pub want_count: i64,
+}
+
 /// mock 触发开播通知响应
 #[derive(Debug, Serialize)]
 pub struct LiveNotifyResponse {

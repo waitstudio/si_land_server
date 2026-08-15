@@ -73,4 +73,24 @@ impl AuthService {
             .await?
             .ok_or_else(|| AppError::not_found("用户不存在"))
     }
+
+    /// 修改昵称
+    ///
+    /// 校验：去除首尾空白后长度 2-20 字符。
+    pub async fn update_nickname(
+        state: &AppState,
+        user_id: &str,
+        nickname: &str,
+    ) -> Result<User, AppError> {
+        let trimmed = nickname.trim();
+        let len = trimmed.chars().count();
+        if !(2..=20).contains(&len) {
+            return Err(AppError::invalid_param("昵称长度需为 2-20 位"));
+        }
+        state
+            .user_store
+            .update_nickname(user_id, trimmed)
+            .await?
+            .ok_or_else(|| AppError::not_found("用户不存在"))
+    }
 }

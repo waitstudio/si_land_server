@@ -1,69 +1,53 @@
-//! 主播订阅业务编排：解析抖音号、管理订阅、检测开播
+//! 主播订阅业务编排：订阅热门主播、想看意愿收集、检测开播
 
 use crate::config::constants;
 use crate::domain::streamer::Streamer;
 use crate::domain::subscription::SubscriptionItem;
 use crate::error::AppError;
 use crate::state::AppState;
-use crate::utils::id;
+use crate::utils::douyin_id;
 use crate::utils::time;
 
 pub struct StreamerService;
 
 impl StreamerService {
-    /// 解析抖音号并订阅主播
+    /// 按抖音号订阅主播（已停用）
     ///
-    /// 通过 StreamerResolver 把抖音号转换为 sec_uid / nickname / avatar，
-    /// 解析时 enter 接口会顺便返回开播状态，同步写入并返回给前端。
-    /// 首次订阅关系建立时：
-    /// - 主播 popularity +1
-    /// - 在 streamer_poll_tasks 表中创建轮询任务（调度器后台自动检测开播）
+    /// 订阅机制已改为仅支持从热门主播列表中选择，手动输入抖音号改为
+    /// 提交"想看"意愿（见 `add_wish`）。此接口保留但直接返回暂不支持。
     pub async fn subscribe(
+        _state: &AppState,
+        _user_id: &str,
+        _douyin_id: &str,
+    ) -> Result<SubscriptionItem, AppError> {
+        Err(AppError::invalid_param(
+            "暂不支持手动订阅主播，请从热门主播中选择",
+        ))
+    }
+
+    /// 按主播 ID 订阅热门主播
+    ///
+    /// 主播必须已在 streamers 表中（即热门主播），否则返回 404。
+    /// 首次订阅关系建立时 popularity +1 并确保轮询任务存在。
+    pub async fn subscribe_by_id(
         state: &AppState,
         user_id: &str,
-        douyin_id: &str,
+        streamer_id: &str,
     ) -> Result<SubscriptionItem, AppError> {
-        let resolved = state.streamer_resolver.resolve(douyin_id).await?;
-        let now = time::now_ts();
-        let live_started_at = if resolved.is_live { Some(now) } else { None };
-
-        let streamer = match state
+        let streamer = state
             .subscription_store
-            .find_by_sec_uid(&resolved.sec_uid)
+            .get_streamer(streamer_id)
             .await?
-        {
-            Some(mut s) => {
-                s.douyin_id = douyin_id.to_string();
-                s.nickname = resolved.nickname;
-                s.avatar = resolved.avatar;
-                s.live = resolved.is_live;
-                s.live_started_at = live_started_at;
-                state.subscription_store.save_streamer(s.clone()).await?;
-                s
-            }
-            None => {
-                let s = Streamer {
-                    id: id::gen_streamer_id(),
-                    sec_uid: resolved.sec_uid.clone(),
-                    douyin_id: douyin_id.to_string(),
-                    nickname: resolved.nickname,
-                    avatar: resolved.avatar,
-                    live: resolved.is_live,
-                    live_started_at,
-                    popularity: 0,
-                };
-                state.subscription_store.save_streamer(s.clone()).await?;
-                s
-            }
-        };
+            .ok_or_else(|| AppError::not_found("主播不存在"))?;
 
+        let now = time::now_ts();
         let is_new = state
             .subscription_store
             .subscribe(user_id, &streamer.id, now)
             .await?;
         if is_new {
             let _ = state.subscription_store.inc_popularity(&streamer.id).await;
-            // 新主播：创建轮询任务（幂等），让后台调度器自动检测开播状态
+            // 确保轮询任务存在（热门主播通常已有，此处幂等保证）
             let _ = state.poll_store.ensure_task(&streamer.id).await;
         }
 
@@ -71,6 +55,20 @@ impl StreamerService {
             streamer,
             subscribed_at: now,
         })
+    }
+
+    /// 提交想看意愿
+    ///
+    /// 用户输入想看的主播抖音号，按 douyin_id 去重并累加想看计数，
+    /// 运营据此决定是否将该主播加入热门列表。
+    pub async fn add_wish(
+        state: &AppState,
+        douyin_id: &str,
+    ) -> Result<i64, AppError> {
+        let trimmed = douyin_id.trim();
+        douyin_id::validate(trimmed)?;
+        let count = state.wish_store.upsert_wish(trimmed).await?;
+        Ok(count)
     }
 
     /// 列出当前用户订阅的主播

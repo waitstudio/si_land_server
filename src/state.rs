@@ -9,14 +9,17 @@ use crate::services::db;
 use crate::services::douyin::client::DouyinEnterClient;
 use crate::services::douyin::live_checker::{HttpLiveChecker, LiveChecker};
 use crate::services::douyin::streamer_resolver::{HttpStreamerResolver, StreamerResolver};
+use crate::services::notice_store::{NoticeStore, PgNoticeStore};
 use crate::services::push::bark::BarkProvider;
 use crate::services::push::provider::PushProvider;
 use crate::services::push::token_store::{PgPushTokenStore, PushTokenStore};
 use crate::services::scheduler::poll_store::{PgPollStore, PollStore};
 use crate::services::scheduler::PollScheduler;
 use crate::services::sms_provider::{MockSmsProvider, SmsProvider};
+use crate::services::streamer_wish_store::{PgStreamerWishStore, StreamerWishStore};
 use crate::services::subscription_store::{PgSubscriptionStore, SubscriptionStore};
 use crate::services::user_store::{PgUserStore, UserStore};
+use crate::services::ws_hub::WsHub;
 
 /// 应用共享状态
 #[derive(Clone)]
@@ -31,6 +34,10 @@ pub struct AppState {
     pub poll_store: Arc<dyn PollStore>,
     pub push_token_store: Arc<dyn PushTokenStore>,
     pub push_providers: Vec<Arc<dyn PushProvider>>,
+    pub notice_store: Arc<dyn NoticeStore>,
+    pub wish_store: Arc<dyn StreamerWishStore>,
+    /// WebSocket 连接管理器（实时通知）
+    pub ws_hub: Arc<WsHub>,
 }
 
 impl AppState {
@@ -46,6 +53,9 @@ impl AppState {
         poll_store: Arc<dyn PollStore>,
         push_token_store: Arc<dyn PushTokenStore>,
         push_providers: Vec<Arc<dyn PushProvider>>,
+        notice_store: Arc<dyn NoticeStore>,
+        wish_store: Arc<dyn StreamerWishStore>,
+        ws_hub: Arc<WsHub>,
     ) -> Self {
         Self {
             config: Arc::new(config),
@@ -58,6 +68,9 @@ impl AppState {
             poll_store,
             push_token_store,
             push_providers,
+            notice_store,
+            wish_store,
+            ws_hub,
         }
     }
 }
@@ -76,7 +89,9 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
     let user_store: Arc<dyn UserStore> = Arc::new(PgUserStore::new(pool.clone()));
     let subscription_store: Arc<dyn SubscriptionStore> = Arc::new(PgSubscriptionStore::new(pool.clone()));
     let poll_store: Arc<dyn PollStore> = Arc::new(PgPollStore::new(pool.clone()));
-    let push_token_store: Arc<dyn PushTokenStore> = Arc::new(PgPushTokenStore::new(pool));
+    let push_token_store: Arc<dyn PushTokenStore> = Arc::new(PgPushTokenStore::new(pool.clone()));
+    let notice_store: Arc<dyn NoticeStore> = Arc::new(PgNoticeStore::new(pool.clone()));
+    let wish_store: Arc<dyn StreamerWishStore> = Arc::new(PgStreamerWishStore::new(pool));
     let code_store: Arc<dyn CodeStore> = Arc::new(InMemoryCodeStore::new());
     let sms_provider: Arc<dyn SmsProvider> = Arc::new(MockSmsProvider);
 
@@ -92,6 +107,8 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
         Err(e) => tracing::warn!("Bark 推送通道初始化失败: {:?}", e),
     }
 
+    let ws_hub = Arc::new(WsHub::new());
+
     Ok(AppState::new(
         config,
         sms_provider,
@@ -103,6 +120,9 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
         poll_store,
         push_token_store,
         push_providers,
+        notice_store,
+        wish_store,
+        ws_hub,
     ))
 }
 
@@ -118,6 +138,8 @@ pub fn spawn_scheduler(state: &AppState) {
         Arc::clone(&state.live_checker),
         state.push_providers.clone(),
         Arc::clone(&state.push_token_store),
+        Arc::clone(&state.notice_store),
+        Arc::clone(&state.ws_hub),
     ));
     tokio::spawn(scheduler.run());
 }

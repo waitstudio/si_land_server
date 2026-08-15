@@ -11,3 +11,8 @@ pub fn gen_user_id() -> String {
 pub fn gen_streamer_id() -> String {
     format!("{}{}", constants::STREAMER_ID_PREFIX, ulid::Ulid::new().to_string().to_lowercase())
 }
+
+/// 生成开播通知 ID：`ln_` + ULID
+pub fn gen_notice_id() -> String {
+    format!("{}{}", constants::NOTICE_ID_PREFIX, ulid::Ulid::new().to_string().to_lowercase())
+}
