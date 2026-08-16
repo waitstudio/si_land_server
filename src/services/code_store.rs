@@ -1,70 +1,137 @@
-//! 验证码存储
-//!
-//! `CodeStore` 抽象验证码的存取，mock 阶段用内存实现，后续可替换为 Redis 实现。
-
-use std::collections::HashMap;
-use std::sync::Mutex;
+//! Redis 验证码存储与手机号维度限流。
 
 use async_trait::async_trait;
+use redis::AsyncCommands;
 
 use crate::domain::sms::SmsCode;
 use crate::error::AppError;
 
-/// 验证码存储
 #[async_trait]
 pub trait CodeStore: Send + Sync {
-    /// 保存（覆盖）某手机号的验证码
-    async fn save(&self, code: SmsCode) -> Result<(), AppError>;
-    /// 读取某手机号的验证码
+    async fn save(&self, code: SmsCode, ttl_secs: u64) -> Result<(), AppError>;
     async fn get(&self, phone: &str) -> Result<Option<SmsCode>, AppError>;
-    /// 删除某手机号的验证码（验证成功 / 过期后调用）
     async fn remove(&self, phone: &str) -> Result<(), AppError>;
+    async fn try_acquire_send(
+        &self,
+        phone: &str,
+        max_requests: i32,
+        window_secs: i64,
+    ) -> Result<bool, AppError>;
+    async fn increment_failed_attempt(&self, phone: &str, ttl_secs: i64) -> Result<i32, AppError>;
 }
 
-/// 内存验证码存储，mock 阶段使用
-pub struct InMemoryCodeStore {
-    inner: Mutex<HashMap<String, SmsCode>>,
+pub struct RedisCodeStore {
+    client: redis::Client,
 }
 
-impl InMemoryCodeStore {
-    pub fn new() -> Self {
-        Self {
-            inner: Mutex::new(HashMap::new()),
-        }
+impl RedisCodeStore {
+    pub fn new(url: &str) -> Result<Self, AppError> {
+        let client = redis::Client::open(url)
+            .map_err(|error| AppError::internal(format!("Redis 配置错误: {error}")))?;
+        Ok(Self { client })
     }
-}
 
-impl Default for InMemoryCodeStore {
-    fn default() -> Self {
-        Self::new()
+    async fn connection(&self) -> Result<redis::aio::MultiplexedConnection, AppError> {
+        self.client
+            .get_multiplexed_async_connection()
+            .await
+            .map_err(|error| AppError::internal(format!("Redis 连接失败: {error}")))
+    }
+
+    fn code_key(phone: &str) -> String {
+        format!("sms:code:{phone}")
+    }
+
+    fn attempt_key(phone: &str) -> String {
+        format!("sms:attempt:{phone}")
+    }
+
+    fn rate_key(phone: &str) -> String {
+        format!("sms:send-rate:{phone}")
     }
 }
 
 #[async_trait]
-impl CodeStore for InMemoryCodeStore {
-    async fn save(&self, code: SmsCode) -> Result<(), AppError> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|e| AppError::internal(format!("code store poisoned: {e}")))?;
-        inner.insert(code.phone.clone(), code);
+impl CodeStore for RedisCodeStore {
+    async fn save(&self, code: SmsCode, ttl_secs: u64) -> Result<(), AppError> {
+        let payload = serde_json::to_string(&code)
+            .map_err(|error| AppError::internal(format!("验证码序列化失败: {error}")))?;
+        let mut connection = self.connection().await?;
+        let _: () = connection
+            .set_ex(Self::code_key(&code.phone), payload, ttl_secs)
+            .await
+            .map_err(|error| AppError::internal(format!("Redis 写入验证码失败: {error}")))?;
+        let _: () = connection
+            .del(Self::attempt_key(&code.phone))
+            .await
+            .map_err(|error| {
+                AppError::internal(format!("Redis 清理验证码尝试次数失败: {error}"))
+            })?;
         Ok(())
     }
 
     async fn get(&self, phone: &str) -> Result<Option<SmsCode>, AppError> {
-        let inner = self
-            .inner
-            .lock()
-            .map_err(|e| AppError::internal(format!("code store poisoned: {e}")))?;
-        Ok(inner.get(phone).cloned())
+        let mut connection = self.connection().await?;
+        let payload: Option<String> = connection
+            .get(Self::code_key(phone))
+            .await
+            .map_err(|error| AppError::internal(format!("Redis 读取验证码失败: {error}")))?;
+        payload
+            .map(|value| {
+                serde_json::from_str(&value)
+                    .map_err(|error| AppError::internal(format!("验证码数据损坏: {error}")))
+            })
+            .transpose()
     }
 
     async fn remove(&self, phone: &str) -> Result<(), AppError> {
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|e| AppError::internal(format!("code store poisoned: {e}")))?;
-        inner.remove(phone);
+        let mut connection = self.connection().await?;
+        let _: () = connection
+            .del(Self::code_key(phone))
+            .await
+            .map_err(|error| AppError::internal(format!("Redis 删除验证码失败: {error}")))?;
+        let _: () = connection
+            .del(Self::attempt_key(phone))
+            .await
+            .map_err(|error| AppError::internal(format!("Redis 删除验证码失败: {error}")))?;
         Ok(())
+    }
+
+    async fn try_acquire_send(
+        &self,
+        phone: &str,
+        max_requests: i32,
+        window_secs: i64,
+    ) -> Result<bool, AppError> {
+        let mut connection = self.connection().await?;
+        let key = Self::rate_key(phone);
+        let count: i32 = connection
+            .incr(&key, 1)
+            .await
+            .map_err(|error| AppError::internal(format!("Redis 发送限流失败: {error}")))?;
+        if count == 1 {
+            let _: bool = connection
+                .expire(&key, window_secs)
+                .await
+                .map_err(|error| {
+                    AppError::internal(format!("Redis 设置发送限流过期失败: {error}"))
+                })?;
+        }
+        Ok(count <= max_requests)
+    }
+
+    async fn increment_failed_attempt(&self, phone: &str, ttl_secs: i64) -> Result<i32, AppError> {
+        let mut connection = self.connection().await?;
+        let key = Self::attempt_key(phone);
+        let attempts: i32 = connection
+            .incr(&key, 1)
+            .await
+            .map_err(|error| AppError::internal(format!("Redis 验证码尝试限流失败: {error}")))?;
+        if attempts == 1 {
+            let _: bool = connection.expire(&key, ttl_secs).await.map_err(|error| {
+                AppError::internal(format!("Redis 设置尝试限流过期失败: {error}"))
+            })?;
+        }
+        Ok(attempts)
     }
 }

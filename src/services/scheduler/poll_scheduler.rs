@@ -16,11 +16,10 @@ use crate::domain::scheduler::PollTask;
 use crate::error::AppError;
 use crate::services::douyin::live_checker::LiveChecker;
 use crate::services::notice_store::NoticeStore;
-use crate::services::push::{PushMessage, PushProvider, PushTokenStore};
+use crate::services::notification_outbox::NotificationOutbox;
 use crate::services::scheduler::adaptive_interval::next_poll_at;
 use crate::services::scheduler::poll_store::PollStore;
 use crate::services::subscription_store::SubscriptionStore;
-use crate::services::ws_hub::WsHub;
 use crate::utils::time;
 
 /// 轮询调度器
@@ -33,11 +32,8 @@ pub struct PollScheduler {
     poll_store: Arc<dyn PollStore>,
     subscription_store: Arc<dyn SubscriptionStore>,
     live_checker: Arc<dyn LiveChecker>,
-    push_providers: Vec<Arc<dyn PushProvider>>,
-    push_token_store: Arc<dyn PushTokenStore>,
     notice_store: Arc<dyn NoticeStore>,
-    /// WebSocket 连接管理器：在线用户实时推送
-    ws_hub: Arc<WsHub>,
+    notification_outbox: Arc<dyn NotificationOutbox>,
     /// 全局并发信号量：限制同时调用抖音接口的请求数
     semaphore: Arc<Semaphore>,
 }
@@ -49,10 +45,8 @@ impl PollScheduler {
         poll_store: Arc<dyn PollStore>,
         subscription_store: Arc<dyn SubscriptionStore>,
         live_checker: Arc<dyn LiveChecker>,
-        push_providers: Vec<Arc<dyn PushProvider>>,
-        push_token_store: Arc<dyn PushTokenStore>,
         notice_store: Arc<dyn NoticeStore>,
-        ws_hub: Arc<WsHub>,
+        notification_outbox: Arc<dyn NotificationOutbox>,
     ) -> Self {
         let semaphore = Arc::new(Semaphore::new(cfg.poll.max_concurrency));
         Self {
@@ -60,10 +54,8 @@ impl PollScheduler {
             poll_store,
             subscription_store,
             live_checker,
-            push_providers,
-            push_token_store,
             notice_store,
-            ws_hub,
+            notification_outbox,
             semaphore,
         }
     }
@@ -93,7 +85,11 @@ impl PollScheduler {
         let now = time::now_ts();
         let tasks = self
             .poll_store
-            .fetch_due(now, self.cfg.poll.batch_size)
+            .fetch_due(
+                now,
+                self.cfg.poll.batch_size,
+                self.cfg.poll.check_timeout_secs.saturating_add(30) as i64,
+            )
             .await?;
 
         if tasks.is_empty() {
@@ -116,10 +112,14 @@ impl PollScheduler {
                     }
                 };
                 if let Err(e) = scheduler.process_task(&task).await {
-                    tracing::warn!(
-                        "处理主播 {} 失败: {:?}",
-                        task.streamer_id, e
-                    );
+                    tracing::warn!("处理主播 {} 失败: {:?}", task.streamer_id, e);
+                    if let Err(reschedule_error) = scheduler.reschedule_failure(&task).await {
+                        tracing::error!(
+                            "恢复主播 {} 的轮询任务失败: {:?}",
+                            task.streamer_id,
+                            reschedule_error
+                        );
+                    }
                 }
             }));
         }
@@ -129,6 +129,15 @@ impl PollScheduler {
             let _ = h.await;
         }
         Ok(())
+    }
+
+    async fn reschedule_failure(&self, task: &PollTask) -> Result<(), AppError> {
+        let now = time::now_ts();
+        let fail_count = task.fail_count.saturating_add(1);
+        let next = next_poll_at(now, task.is_live(), fail_count, &self.cfg.poll);
+        self.poll_store
+            .schedule_next(&task.streamer_id, next, task.last_status, fail_count)
+            .await
     }
 
     /// 处理单个主播的轮询任务
@@ -157,10 +166,7 @@ impl PollScheduler {
                 status.room_title,
             ),
             Ok(Err(e)) => {
-                tracing::warn!(
-                    "检测 {} 开播状态失败: {:?}",
-                    streamer.douyin_id, e
-                );
+                tracing::warn!("检测 {} 开播状态失败: {:?}", streamer.douyin_id, e);
                 (task.is_live(), task.fail_count + 1, None, None, None)
             }
             Err(_) => {
@@ -211,12 +217,7 @@ impl PollScheduler {
         Ok(())
     }
 
-    /// 主播开播时，查询所有订阅者，先入库一条开播通知，再分流推送：
-    /// - 在线用户（WS 有存活连接）：推送 notice + 权威未读数，实时弹窗
-    /// - 离线用户：按绑定的推送通道（如 Bark）走系统推送
-    ///
-    /// 入库与推送均失败不影响主流程，仅记录日志；
-    /// 即使用户未绑定推送凭证，通知仍会入库，可在 App 内消息列表看到。
+    /// 主播开播时先落库通知和 Outbox 事件；实际 WS/系统推送由 Worker 异步完成。
     async fn notify_subscribers(
         &self,
         nickname: &str,
@@ -246,20 +247,11 @@ impl PollScheduler {
         };
         let created_at = time::now_ts();
 
-        // 分流判定：以入库时刻的 WS 连接状态为准
-        let (online_users, offline_users): (Vec<String>, Vec<String>) = user_ids
-            .into_iter()
-            .partition(|uid| self.ws_hub.is_online(uid));
-
-        // 先入库：为每个订阅者落库一条通知（即使后续推送失败也能在 App 内看到）。
-        // 入库返回的通知实体直接用于在线用户的 WS 推送。
-        let mut online_notices: Vec<(String, crate::domain::notice::LiveNotice)> =
-            Vec::with_capacity(online_users.len());
-        for uid in &online_users {
-            match self
+        for user_id in user_ids {
+            let notice = match self
                 .notice_store
                 .create(
-                    uid,
+                    &user_id,
                     streamer_id,
                     nickname,
                     &title,
@@ -269,93 +261,25 @@ impl PollScheduler {
                 )
                 .await
             {
-                Ok(notice) => online_notices.push((uid.clone(), notice)),
-                Err(e) => tracing::warn!("入库开播通知失败 user={}: {:?}", uid, e),
-            }
-        }
-        for uid in &offline_users {
-            if let Err(e) = self
-                .notice_store
-                .create(
-                    uid,
-                    streamer_id,
-                    nickname,
-                    &title,
-                    &body,
-                    live_started_at,
-                    created_at,
-                )
-                .await
-            {
-                tracing::warn!("入库开播通知失败 user={}: {:?}", uid, e);
-            }
-        }
-
-        // 在线用户：WS 推送 notice（字段与 NoticeItem 对齐，snake_case）
-        // + 权威未读数（客户端收到后校准红点，容错本地计数漂移）
-        for (uid, notice) in online_notices {
+                Ok(notice) => notice,
+                Err(error) => {
+                    tracing::warn!(user_id, ?error, "创建开播通知失败");
+                    continue;
+                }
+            };
             let payload = serde_json::json!({
-                "type": "notice",
-                "data": {
-                    "id": notice.id,
-                    "streamer_id": notice.streamer_id,
-                    "streamer_nickname": notice.streamer_nickname,
-                    "avatar": avatar,
-                    "title": notice.title,
-                    "body": notice.body,
-                    "live_started_at": notice.live_started_at,
-                    "created_at": notice.created_at,
-                    "read": false,
-                }
+                "id": notice.id,
+                "streamer_id": notice.streamer_id,
+                "streamer_nickname": notice.streamer_nickname,
+                "avatar": avatar,
+                "title": notice.title,
+                "body": notice.body,
+                "live_started_at": notice.live_started_at,
+                "created_at": notice.created_at,
+                "read": false,
             });
-            self.ws_hub.send_to_user(&uid, &payload.to_string());
-            if let Ok(unread) = self.notice_store.unread_count(&uid).await {
-                let sync = serde_json::json!({"type": "unread", "data": {"count": unread}});
-                self.ws_hub.send_to_user(&uid, &sync.to_string());
-            }
-        }
-
-        // 离线用户：按绑定的推送通道下发（Bark 系统推送）
-        if offline_users.is_empty() {
-            return;
-        }
-        let tokens = match self.push_token_store.list_by_users(&offline_users).await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("查询推送凭证失败: {:?}", e);
-                return;
-            }
-        };
-
-        let msg = PushMessage {
-            title,
-            body,
-            url: None,
-        };
-
-        for token in tokens {
-            let provider = self
-                .push_providers
-                .iter()
-                .find(|p| p.channel() == token.channel);
-            match provider {
-                Some(p) => {
-                    if let Err(e) = p.send(&token.token, &msg).await {
-                        tracing::warn!(
-                            "推送失败 channel={} user={}: {:?}",
-                            token.channel,
-                            token.user_id,
-                            e
-                        );
-                    }
-                }
-                None => {
-                    tracing::warn!(
-                        "未配置 {} 推送通道，跳过用户 {}",
-                        token.channel,
-                        token.user_id
-                    );
-                }
+            if let Err(error) = self.notification_outbox.enqueue(&user_id, payload).await {
+                tracing::error!(user_id, ?error, "创建通知 Outbox 事件失败");
             }
         }
     }

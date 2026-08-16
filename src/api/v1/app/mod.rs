@@ -34,6 +34,7 @@ pub fn router(state: AppState) -> Router<AppState> {
     let protected = Router::new()
         .route("/auth/me", get(auth::me))
         .route("/auth/nickname", put(auth::update_nickname))
+        .route("/auth/ws-ticket", get(auth::issue_ws_ticket))
         // 主播订阅
         .route(
             "/streamers",

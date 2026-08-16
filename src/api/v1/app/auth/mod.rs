@@ -4,4 +4,4 @@ mod dto;
 mod handler;
 mod service;
 
-pub use handler::{login, me, update_nickname};
+pub use handler::{issue_ws_ticket, login, me, update_nickname};

@@ -3,8 +3,8 @@
 use std::fmt;
 
 use axum::{
-    response::{IntoResponse, Response},
     Json,
+    response::{IntoResponse, Response},
 };
 
 use crate::response::{ApiResponse, BizCode};
@@ -26,7 +26,10 @@ impl std::error::Error for AppError {}
 
 impl AppError {
     pub fn new(code: BizCode, msg: impl Into<String>) -> Self {
-        Self { code, msg: msg.into() }
+        Self {
+            code,
+            msg: msg.into(),
+        }
     }
 
     pub fn invalid_param(msg: impl Into<String>) -> Self {
@@ -65,7 +68,15 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.code.http_status();
-        let body = ApiResponse::<serde_json::Value>::error(self.code, self.msg);
+        if matches!(self.code, BizCode::InternalError) {
+            tracing::error!(error = %self.msg, "internal request error");
+        }
+        let message = if matches!(self.code, BizCode::InternalError) {
+            "服务暂时不可用，请稍后再试".to_string()
+        } else {
+            self.msg
+        };
+        let body = ApiResponse::<serde_json::Value>::error(self.code, message);
         (status, Json(body)).into_response()
     }
 }

@@ -8,9 +8,7 @@ use crate::error::AppError;
 
 /// 读取必填环境变量，缺失返回错误
 pub fn required(key: &str) -> Result<String, AppError> {
-    env::var(key).map_err(|_| {
-        AppError::internal(format!("缺少必填环境变量: {key}"))
-    })
+    env::var(key).map_err(|_| AppError::internal(format!("缺少必填环境变量: {key}")))
 }
 
 /// 读取环境变量，缺失返回默认值
@@ -24,6 +22,20 @@ pub fn optional(key: &str) -> Option<String> {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// 读取逗号分隔的环境变量列表，自动忽略空白项。
+pub fn csv(key: &str) -> Vec<String> {
+    optional(key)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 解析环境变量，失败或缺失返回默认值

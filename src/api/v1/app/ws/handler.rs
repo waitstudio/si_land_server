@@ -10,8 +10,8 @@ use std::time::Duration;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
-use futures_util::stream::StreamExt;
 use futures_util::SinkExt;
+use futures_util::stream::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -26,21 +26,23 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 /// WS 握手 query 参数
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
-    pub token: String,
+    pub ticket: String,
 }
 
-/// GET /api/v1/app/ws?token=...
+/// GET /api/v1/app/ws?ticket=...
 ///
-/// 先校验 JWT 再升级协议；校验失败返回 401（非 WS 响应），
+/// 先消费一次性 ticket 换取用户身份再升级协议；校验失败返回 401（非 WS 响应），
 /// 客户端据此判定为鉴权失败并停止重连（需重新登录）。
 pub async fn ws_handler(
     State(state): State<AppState>,
     Query(q): Query<WsQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, AppError> {
-    // 复用统一 JWT 校验（过期/签名错误均返回 Unauthorized）
-    let claims = crate::services::jwt::verify(&q.token, &state.config.jwt.secret)?;
-    let user_id = claims.sub;
+    let user_id = state
+        .ws_ticket_store
+        .consume(&q.ticket)
+        .await?
+        .ok_or_else(|| AppError::unauthorized("WebSocket ticket 无效或已过期"))?;
 
     let hub = Arc::clone(&state.ws_hub);
     let notice_store = Arc::clone(&state.notice_store);
@@ -64,7 +66,9 @@ async fn session(
     let hello = json!({"type": "hello", "data": {"userId": user_id}});
     let unread_sync = json!({"type": "unread", "data": {"count": unread}});
     let _ = sender.send(Message::Text(hello.to_string().into())).await;
-    let _ = sender.send(Message::Text(unread_sync.to_string().into())).await;
+    let _ = sender
+        .send(Message::Text(unread_sync.to_string().into()))
+        .await;
 
     loop {
         tokio::select! {
@@ -132,4 +136,23 @@ fn echo_pong(ping_text: &str) -> String {
         .and_then(|v| v.get("ts").cloned())
         .unwrap_or(serde_json::Value::Null);
     json!({"type": "pong", "ts": ts}).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{echo_pong, parse_type};
+
+    #[test]
+    fn parses_ping_type() {
+        assert_eq!(parse_type(r#"{"type":"ping"}"#).as_deref(), Some("ping"));
+        assert_eq!(parse_type("not-json"), None);
+    }
+
+    #[test]
+    fn pong_preserves_timestamp() {
+        assert_eq!(
+            echo_pong(r#"{"type":"ping","ts":42}"#),
+            r#"{"ts":42,"type":"pong"}"#
+        );
+    }
 }

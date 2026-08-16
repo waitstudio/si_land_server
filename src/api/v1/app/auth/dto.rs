@@ -26,3 +26,10 @@ pub struct LoginResponse {
 pub struct UpdateNicknameRequest {
     pub nickname: String,
 }
+
+/// 一次性 WebSocket 握手凭据。
+#[derive(Debug, Serialize)]
+pub struct WsTicketResponse {
+    pub ticket: String,
+    pub expires_at: i64,
+}

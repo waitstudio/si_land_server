@@ -34,7 +34,7 @@ domain/              领域层：纯业务模型（User、SmsCode），不依赖
    ▼
 services/            基础设施层：trait 定义 + mock 实现
    │  SmsProvider  —— 短信通道（MockSmsProvider 仅日志）
-   │  CodeStore    —— 验证码存储（InMemoryCodeStore 内存实现）
+   │  CodeStore    —— 验证码与限流存储（Redis）
    ▼
 state.rs             AppState：依赖注入，持有 trait 对象（Arc<dyn ...>）
 config.rs            配置集中管理
@@ -242,7 +242,7 @@ cargo test                    # 测试（含集成测试，基于 lib.rs）
 ## 后续路线（业务实现阶段）
 
 - [ ] 接入 sqlx + PostgreSQL，建表与迁移
-- [ ] 实现 `RedisCodeStore`（替换 InMemoryCodeStore）
+- [x] 使用 `RedisCodeStore` 持久化验证码并执行手机号限流
 - [ ] 实现真实 `SmsProvider`（阿里云 / 腾讯云）
 - [ ] JWT 签发与鉴权中间件
 - [ ] 用户体系、注册流程

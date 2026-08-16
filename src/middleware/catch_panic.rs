@@ -19,7 +19,9 @@ pub fn handle_panic(err: Box<dyn std::any::Any + Send + 'static>) -> Response {
         "未知 panic".to_string()
     };
     tracing::error!("请求处理 panic: {msg}");
-    let body =
-        ApiResponse::<serde_json::Value>::error(BizCode::InternalError, format!("服务异常: {msg}"));
+    let body = ApiResponse::<serde_json::Value>::error(
+        BizCode::InternalError,
+        "服务暂时不可用，请稍后再试",
+    );
     (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
 }

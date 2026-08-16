@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS streamer_poll_tasks (
     last_status    SMALLINT    NOT NULL DEFAULT 0,   -- 0=未知 1=在播 2=未播
     last_poll_at   BIGINT,
     fail_count     INT         NOT NULL DEFAULT 0,
+    lease_until    BIGINT,
     CONSTRAINT fk_poll_streamer
         FOREIGN KEY (streamer_id) REFERENCES streamers(id) ON DELETE CASCADE
 );

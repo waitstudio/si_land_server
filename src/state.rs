@@ -4,23 +4,26 @@ use std::sync::Arc;
 
 use crate::config::AppConfig;
 use crate::error::AppError;
-use crate::services::code_store::{CodeStore, InMemoryCodeStore};
+use crate::services::code_store::{CodeStore, RedisCodeStore};
 use crate::services::db;
 use crate::services::douyin::client::DouyinEnterClient;
 use crate::services::douyin::live_checker::{HttpLiveChecker, LiveChecker};
 use crate::services::douyin::streamer_resolver::{HttpStreamerResolver, StreamerResolver};
 use crate::services::feedback_store::{FeedbackStore, PgFeedbackStore};
 use crate::services::notice_store::{NoticeStore, PgNoticeStore};
+use crate::services::notification_outbox::{NotificationOutbox, PgNotificationOutbox};
+use crate::services::outbox_worker::OutboxWorker;
 use crate::services::push::bark::BarkProvider;
 use crate::services::push::provider::PushProvider;
 use crate::services::push::token_store::{PgPushTokenStore, PushTokenStore};
-use crate::services::scheduler::poll_store::{PgPollStore, PollStore};
 use crate::services::scheduler::PollScheduler;
+use crate::services::scheduler::poll_store::{PgPollStore, PollStore};
 use crate::services::sms_provider::{MockSmsProvider, SmsProvider};
 use crate::services::streamer_wish_store::{PgStreamerWishStore, StreamerWishStore};
 use crate::services::subscription_store::{PgSubscriptionStore, SubscriptionStore};
 use crate::services::user_store::{PgUserStore, UserStore};
 use crate::services::ws_hub::WsHub;
+use crate::services::ws_ticket_store::{PgWsTicketStore, WsTicketStore};
 
 /// 应用共享状态
 #[derive(Clone)]
@@ -41,6 +44,8 @@ pub struct AppState {
     pub feedback_store: Arc<dyn FeedbackStore>,
     /// WebSocket 连接管理器（实时通知）
     pub ws_hub: Arc<WsHub>,
+    pub ws_ticket_store: Arc<dyn WsTicketStore>,
+    pub notification_outbox: Arc<dyn NotificationOutbox>,
 }
 
 impl AppState {
@@ -60,6 +65,8 @@ impl AppState {
         wish_store: Arc<dyn StreamerWishStore>,
         feedback_store: Arc<dyn FeedbackStore>,
         ws_hub: Arc<WsHub>,
+        ws_ticket_store: Arc<dyn WsTicketStore>,
+        notification_outbox: Arc<dyn NotificationOutbox>,
     ) -> Self {
         Self {
             config: Arc::new(config),
@@ -76,6 +83,8 @@ impl AppState {
             wish_store,
             feedback_store,
             ws_hub,
+            ws_ticket_store,
+            notification_outbox,
         }
     }
 }
@@ -92,13 +101,14 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
     db::migrations::run(&pool).await?;
 
     let user_store: Arc<dyn UserStore> = Arc::new(PgUserStore::new(pool.clone()));
-    let subscription_store: Arc<dyn SubscriptionStore> = Arc::new(PgSubscriptionStore::new(pool.clone()));
+    let subscription_store: Arc<dyn SubscriptionStore> =
+        Arc::new(PgSubscriptionStore::new(pool.clone()));
     let poll_store: Arc<dyn PollStore> = Arc::new(PgPollStore::new(pool.clone()));
     let push_token_store: Arc<dyn PushTokenStore> = Arc::new(PgPushTokenStore::new(pool.clone()));
     let notice_store: Arc<dyn NoticeStore> = Arc::new(PgNoticeStore::new(pool.clone()));
     let wish_store: Arc<dyn StreamerWishStore> = Arc::new(PgStreamerWishStore::new(pool.clone()));
-    let feedback_store: Arc<dyn FeedbackStore> = Arc::new(PgFeedbackStore::new(pool));
-    let code_store: Arc<dyn CodeStore> = Arc::new(InMemoryCodeStore::new());
+    let feedback_store: Arc<dyn FeedbackStore> = Arc::new(PgFeedbackStore::new(pool.clone()));
+    let code_store: Arc<dyn CodeStore> = Arc::new(RedisCodeStore::new(&config.redis.url)?);
     let sms_provider: Arc<dyn SmsProvider> = Arc::new(MockSmsProvider);
 
     let douyin_client = Arc::new(DouyinEnterClient::new(Arc::new(config.douyin.clone()))?);
@@ -114,6 +124,9 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
     }
 
     let ws_hub = Arc::new(WsHub::new());
+    let ws_ticket_store: Arc<dyn WsTicketStore> = Arc::new(PgWsTicketStore::new(pool.clone()));
+    let notification_outbox: Arc<dyn NotificationOutbox> =
+        Arc::new(PgNotificationOutbox::new(pool));
 
     Ok(AppState::new(
         config,
@@ -130,6 +143,8 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
         wish_store,
         feedback_store,
         ws_hub,
+        ws_ticket_store,
+        notification_outbox,
     ))
 }
 
@@ -143,10 +158,17 @@ pub fn spawn_scheduler(state: &AppState) {
         Arc::clone(&state.poll_store),
         Arc::clone(&state.subscription_store),
         Arc::clone(&state.live_checker),
-        state.push_providers.clone(),
-        Arc::clone(&state.push_token_store),
         Arc::clone(&state.notice_store),
-        Arc::clone(&state.ws_hub),
+        Arc::clone(&state.notification_outbox),
     ));
     tokio::spawn(scheduler.run());
+
+    let worker = Arc::new(OutboxWorker::new(
+        Arc::clone(&state.notification_outbox),
+        Arc::clone(&state.notice_store),
+        Arc::clone(&state.push_token_store),
+        state.push_providers.clone(),
+        Arc::clone(&state.ws_hub),
+    ));
+    tokio::spawn(worker.run());
 }

@@ -21,3 +21,8 @@ pub fn gen_notice_id() -> String {
 pub fn gen_feedback_id() -> String {
     format!("{}{}", constants::FEEDBACK_ID_PREFIX, ulid::Ulid::new().to_string().to_lowercase())
 }
+
+/// 生成 Outbox 事件 ID：`ob_` + ULID。
+pub fn gen_outbox_id() -> String {
+    format!("ob_{}", ulid::Ulid::new().to_string().to_lowercase())
+}

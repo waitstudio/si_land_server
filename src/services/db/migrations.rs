@@ -50,10 +50,12 @@ pub async fn run(pool: &PgPool) -> Result<(), AppError> {
     .map_err(|e| AppError::internal(format!("建表 streamers 失败: {e}")))?;
 
     // 兼容已存在表：补 popularity 字段
-    sqlx::query(r#"ALTER TABLE streamers ADD COLUMN IF NOT EXISTS popularity BIGINT NOT NULL DEFAULT 0"#)
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::internal(format!("添加 popularity 字段失败: {e}")))?;
+    sqlx::query(
+        r#"ALTER TABLE streamers ADD COLUMN IF NOT EXISTS popularity BIGINT NOT NULL DEFAULT 0"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::internal(format!("添加 popularity 字段失败: {e}")))?;
 
     // popularity 索引（复合 updated_at 兜底排序）
     sqlx::query(
@@ -82,10 +84,12 @@ pub async fn run(pool: &PgPool) -> Result<(), AppError> {
     .map_err(|e| AppError::internal(format!("建表 subscriptions 失败: {e}")))?;
 
     // subscriptions 索引：按 streamer_id 反查（级联删除用）
-    sqlx::query(r#"CREATE INDEX IF NOT EXISTS idx_subscriptions_streamer ON subscriptions (streamer_id)"#)
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::internal(format!("创建 subscriptions 索引失败: {e}")))?;
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_subscriptions_streamer ON subscriptions (streamer_id)"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::internal(format!("创建 subscriptions 索引失败: {e}")))?;
 
     // subscriptions 索引：按 user_id 查订阅列表 + 按订阅时间排序
     sqlx::query(
@@ -113,10 +117,12 @@ pub async fn run(pool: &PgPool) -> Result<(), AppError> {
 
     // 触发器：必须逐条执行（prepared statement 不允许多条命令）
     for table in ["users", "streamers"] {
-        sqlx::query(&format!("DROP TRIGGER IF EXISTS trg_{table}_updated ON {table}"))
-            .execute(pool)
-            .await
-            .map_err(|e| AppError::internal(format!("删除 {table} 触发器失败: {e}")))?;
+        sqlx::query(&format!(
+            "DROP TRIGGER IF EXISTS trg_{table}_updated ON {table}"
+        ))
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::internal(format!("删除 {table} 触发器失败: {e}")))?;
 
         sqlx::query(&format!(
             "CREATE TRIGGER trg_{table}_updated BEFORE UPDATE ON {table} \
@@ -138,6 +144,12 @@ pub async fn run(pool: &PgPool) -> Result<(), AppError> {
 
     // 0005：问题反馈收集表
     run_0005_feedback(pool).await?;
+
+    // 0007：WebSocket 一次性 ticket
+    run_0007_ws_tickets(pool).await?;
+
+    // 0008：通知 Outbox
+    run_0008_notification_outbox(pool).await?;
 
     tracing::info!("数据库迁移完成");
     Ok(())
@@ -162,6 +174,11 @@ async fn run_0002_poll_scheduler(pool: &PgPool) -> Result<(), AppError> {
     .execute(pool)
     .await
     .map_err(|e| AppError::internal(format!("建表 streamer_poll_tasks 失败: {e}")))?;
+
+    sqlx::query("ALTER TABLE streamer_poll_tasks ADD COLUMN IF NOT EXISTS lease_until BIGINT")
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::internal(format!("添加 streamer_poll_tasks lease 失败: {e}")))?;
 
     sqlx::query(
         r#"CREATE INDEX IF NOT EXISTS idx_poll_next
@@ -249,7 +266,10 @@ async fn run_0002_poll_scheduler(pool: &PgPool) -> Result<(), AppError> {
     .await
     .map_err(|e| AppError::internal(format!("回填 streamer_poll_tasks 失败: {e}")))?;
     if backfilled.rows_affected() > 0 {
-        tracing::info!("回填 {} 个主播到 streamer_poll_tasks", backfilled.rows_affected());
+        tracing::info!(
+            "回填 {} 个主播到 streamer_poll_tasks",
+            backfilled.rows_affected()
+        );
     }
 
     Ok(())
@@ -319,5 +339,47 @@ async fn run_0005_feedback(pool: &PgPool) -> Result<(), AppError> {
     .execute(pool)
     .await
     .map_err(|e| AppError::internal(format!("创建 feedbacks 索引失败: {e}")))?;
+    Ok(())
+}
+
+async fn run_0007_ws_tickets(pool: &PgPool) -> Result<(), AppError> {
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS ws_tickets (
+            ticket      VARCHAR(64) PRIMARY KEY,
+            user_id     VARCHAR(64) NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            expires_at  TIMESTAMPTZ NOT NULL
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::internal(format!("建表 ws_tickets 失败: {e}")))?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_ws_tickets_expiry ON ws_tickets (expires_at)")
+        .execute(pool)
+        .await
+        .map_err(|e| AppError::internal(format!("创建 ws_tickets 索引失败: {e}")))?;
+    Ok(())
+}
+
+async fn run_0008_notification_outbox(pool: &PgPool) -> Result<(), AppError> {
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS notification_outbox (
+            id              VARCHAR(64) PRIMARY KEY,
+            user_id         VARCHAR(64) NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+            payload         JSONB NOT NULL,
+            attempts        INT NOT NULL DEFAULT 0,
+            next_attempt_at BIGINT NOT NULL,
+            lease_until     BIGINT,
+            last_error      TEXT
+        )"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::internal(format!("建表 notification_outbox 失败: {e}")))?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_notification_outbox_due ON notification_outbox (next_attempt_at)",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::internal(format!("创建 notification_outbox 索引失败: {e}")))?;
     Ok(())
 }

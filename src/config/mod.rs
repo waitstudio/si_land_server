@@ -13,6 +13,7 @@ use crate::error::AppError;
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
+    pub redis: RedisConfig,
     pub jwt: JwtConfig,
     pub sms: SmsConfig,
     pub admin: AdminConfig,
@@ -27,10 +28,18 @@ pub struct ServerConfig {
     pub port: u16,
     pub rust_log: String,
     pub db_max_connections: u32,
+    /// 允许跨域访问的前端 Origin 白名单。
+    pub cors_allowed_origins: Vec<String>,
+    pub ws_ticket_expires_secs: i64,
 }
 
 #[derive(Debug, Clone)]
 pub struct DatabaseConfig {
+    pub url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RedisConfig {
     pub url: String,
 }
 
@@ -48,13 +57,24 @@ pub struct SmsConfig {
     /// 固定验证码（mock 联调用）；为空则随机生成
     pub mock_fixed_code: Option<String>,
     pub default_nickname: String,
+    pub max_sends_per_hour: i32,
+    pub max_verify_attempts: i32,
 }
 
 /// 管理员后台账号配置（内置单管理员，用户名密码登录）
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AdminConfig {
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for AdminConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminConfig")
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -105,15 +125,32 @@ pub struct PushConfig {
 impl AppConfig {
     /// 从环境变量加载，必填项缺失返回错误
     pub fn load() -> Result<Self, AppError> {
+        let app_env = env::or("APP_ENV", "development");
+        let cors_allowed_origins = env::csv("CORS_ALLOWED_ORIGINS");
+        if app_env == "production" && cors_allowed_origins.is_empty() {
+            return Err(AppError::internal("生产环境必须配置 CORS_ALLOWED_ORIGINS"));
+        }
         Ok(Self {
             server: ServerConfig {
                 host: env::or("SERVER_HOST", "0.0.0.0"),
                 port: env::parse_or("SERVER_PORT", 8080),
                 rust_log: env::or("RUST_LOG", "si_land_server=debug,tower_http=debug"),
                 db_max_connections: env::parse_or("DB_MAX_CONNECTIONS", 8),
+                cors_allowed_origins: if cors_allowed_origins.is_empty() {
+                    vec![
+                        "http://localhost:5173".to_string(),
+                        "http://127.0.0.1:5173".to_string(),
+                    ]
+                } else {
+                    cors_allowed_origins
+                },
+                ws_ticket_expires_secs: env::parse_or("WS_TICKET_EXPIRES_SECS", 60),
             },
             database: DatabaseConfig {
                 url: env::required("DATABASE_URL")?,
+            },
+            redis: RedisConfig {
+                url: env::required("REDIS_URL")?,
             },
             jwt: JwtConfig {
                 secret: env::required("JWT_SECRET")?,
@@ -125,10 +162,12 @@ impl AppConfig {
                 code_length: env::parse_or("SMS_CODE_LENGTH", 6),
                 mock_fixed_code: env::optional("MOCK_FIXED_CODE"),
                 default_nickname: env::or("DEFAULT_USER_NICKNAME", "硅基星球用户"),
+                max_sends_per_hour: env::parse_or("SMS_MAX_SENDS_PER_HOUR", 5),
+                max_verify_attempts: env::parse_or("SMS_MAX_VERIFY_ATTEMPTS", 5),
             },
             admin: AdminConfig {
-                username: env::or("ADMIN_USERNAME", "admin"),
-                password: env::or("ADMIN_PASSWORD", "admin123"),
+                username: env::required("ADMIN_USERNAME")?,
+                password: env::required("ADMIN_PASSWORD")?,
             },
             douyin: DouyinConfig {
                 http_timeout_secs: env::parse_or("DOUYIN_HTTP_TIMEOUT_SECS", 10),
@@ -148,10 +187,7 @@ impl AppConfig {
                     "DOUYIN_ENTER_API_URL",
                     "https://live.douyin.com/webcast/room/web/enter/",
                 ),
-                web_rid_base_url: env::or(
-                    "DOUYIN_WEB_RID_BASE_URL",
-                    "https://live.douyin.com/",
-                ),
+                web_rid_base_url: env::or("DOUYIN_WEB_RID_BASE_URL", "https://live.douyin.com/"),
             },
             poll: PollConfig {
                 loop_interval_secs: env::parse_or("POLL_LOOP_INTERVAL_SECS", 3),

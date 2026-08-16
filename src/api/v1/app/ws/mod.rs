@@ -1,9 +1,9 @@
 //! App 端 WebSocket 实时通知模块
 //!
-//! 端点：`GET /api/v1/app/ws?token=<JWT>`（升级协议为 WebSocket）
+//! 端点：`GET /api/v1/app/ws?ticket=<one-time-ticket>`（升级协议为 WebSocket）
 //!
-//! 鉴权：WS 握手无法携带自定义 Header，token 通过 query 传递，
-//! 升级前校验 JWT，失败返回 401（不建立连接）。
+//! 鉴权：客户端先用 JWT 调用 `/auth/ws-ticket` 换取一次性短期 ticket，
+//! 升级前消费 ticket，失败返回 401（不建立连接）。
 //!
 //! ## 通信协议（JSON 文本帧）
 //!

@@ -34,21 +34,30 @@ impl AuthService {
                     return Err(AppError::sms_code_expired("验证码已过期"));
                 }
                 if sms_code.code != code {
+                    let attempts = state
+                        .code_store
+                        .increment_failed_attempt(phone, state.config.sms.code_expire_in as i64)
+                        .await?;
+                    if attempts >= state.config.sms.max_verify_attempts {
+                        state.code_store.remove(phone).await?;
+                        return Err(AppError::rate_limit("验证码错误次数过多，请重新获取验证码"));
+                    }
                     return Err(AppError::sms_code_invalid("验证码错误"));
                 }
                 state.code_store.remove(phone).await?;
 
                 let user = match state.user_store.find_by_phone(phone).await? {
                     Some(u) => u,
-                    None => state
-                        .user_store
-                        .create(phone, &state.config.sms.default_nickname, "")
-                        .await?,
+                    None => {
+                        state
+                            .user_store
+                            .create(phone, &state.config.sms.default_nickname, "")
+                            .await?
+                    }
                 };
                 let _ = state.user_store.touch_login(&user.user_id).await;
 
-                let expires_at =
-                    time::now_ts() + state.config.jwt.expires_hours * 3600;
+                let expires_at = time::now_ts() + state.config.jwt.expires_hours * 3600;
                 let token = jwt::sign(
                     &user.user_id,
                     &state.config.jwt.secret,

@@ -17,6 +17,16 @@ impl SmsService {
             return Err(AppError::invalid_param("手机号格式不正确"));
         }
 
+        if !state
+            .code_store
+            .try_acquire_send(phone, state.config.sms.max_sends_per_hour, 3600)
+            .await?
+        {
+            return Err(AppError::rate_limit(
+                "验证码发送次数已达上限，请一小时后再试",
+            ));
+        }
+
         // 重发冷却检查
         if let Some(existing) = state.code_store.get(phone).await? {
             let elapsed = Utc::now().signed_duration_since(existing.created_at);
@@ -40,7 +50,7 @@ impl SmsService {
             created_at: now,
             expire_at: now + Duration::seconds(expire_in as i64),
         };
-        state.code_store.save(sms_code).await?;
+        state.code_store.save(sms_code, expire_in).await?;
 
         Ok(expire_in)
     }

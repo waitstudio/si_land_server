@@ -1,0 +1,104 @@
+openapi: 3.1.0
+info:
+  title: Si Land App API
+  version: 0.1.0
+  description: REST contract for the mobile client. WebSocket messages are defined in `x-websocket`.
+servers:
+  - url: /api/v1/app
+paths:
+  /sms/send:
+    post:
+      summary: Send SMS verification code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendSmsRequest'
+      responses:
+        '200': { $ref: '#/components/responses/ApiSuccess' }
+  /auth/login:
+    post:
+      summary: Login with SMS code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200': { $ref: '#/components/responses/ApiSuccess' }
+  /auth/me:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Get the current user
+      responses:
+        '200': { $ref: '#/components/responses/ApiSuccess' }
+  /auth/ws-ticket:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Issue a one-time WebSocket ticket
+      responses:
+        '200':
+          description: A ticket valid for a short period and a single handshake
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WsTicketResponse'
+  /notices:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: List live notices
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 100 } }
+      responses:
+        '200': { $ref: '#/components/responses/ApiSuccess' }
+x-websocket:
+  url: /api/v1/app/ws?ticket={ticket}
+  clientMessages:
+    - type: ping
+      schema: { type: object, required: [type, ts], properties: { type: { const: ping }, ts: { type: integer } } }
+  serverMessages:
+    - type: hello
+    - type: pong
+    - type: unread
+    - type: notice
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  responses:
+    ApiSuccess:
+      description: API response envelope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiResponse' }
+  schemas:
+    ApiResponse:
+      type: object
+      required: [code, msg]
+      properties:
+        code: { type: integer, description: '0 means success' }
+        msg: { type: string }
+        data: {}
+    SendSmsRequest:
+      type: object
+      required: [phone]
+      properties: { phone: { type: string, pattern: '^1[3-9]\\d{9}$' } }
+    LoginRequest:
+      type: object
+      required: [phone, code]
+      properties:
+        phone: { type: string }
+        code: { type: string }
+    WsTicketResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApiResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [ticket, expires_at]
+              properties:
+                ticket: { type: string }
+                expires_at: { type: integer, format: int64 }

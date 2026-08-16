@@ -18,6 +18,7 @@ pub trait PollStore: Send + Sync {
         &self,
         now: i64,
         limit: i64,
+        lease_secs: i64,
     ) -> Result<Vec<PollTask>, AppError>;
 
     /// 原子地推进 next_poll_at 并更新 last_status / fail_count
@@ -36,11 +37,7 @@ pub trait PollStore: Send + Sync {
     async fn ensure_task(&self, streamer_id: &str) -> Result<(), AppError>;
 
     /// 设置轮询启停
-    async fn set_enabled(
-        &self,
-        streamer_id: &str,
-        enabled: bool,
-    ) -> Result<(), AppError>;
+    async fn set_enabled(&self, streamer_id: &str, enabled: bool) -> Result<(), AppError>;
 
     /// 查询订阅某主播的所有用户 ID（用于推送通知）
     async fn list_subscribers(&self, streamer_id: &str) -> Result<Vec<String>, AppError>;
@@ -62,6 +59,7 @@ impl PollStore for PgPollStore {
         &self,
         now: i64,
         limit: i64,
+        lease_secs: i64,
     ) -> Result<Vec<PollTask>, AppError> {
         let mut tx = self.pool.begin().await?;
 
@@ -70,7 +68,9 @@ impl PollStore for PgPollStore {
             r#"SELECT streamer_id, poll_enabled, next_poll_at, last_status,
                       last_poll_at, fail_count
                FROM streamer_poll_tasks
-               WHERE poll_enabled = TRUE AND next_poll_at <= $1
+               WHERE poll_enabled = TRUE
+                 AND next_poll_at <= $1
+                 AND (lease_until IS NULL OR lease_until <= $1)
                ORDER BY next_poll_at
                LIMIT $2
                FOR UPDATE SKIP LOCKED"#,
@@ -80,19 +80,15 @@ impl PollStore for PgPollStore {
         .fetch_all(&mut *tx)
         .await?;
 
-        // 将抓到的任务 next_poll_at 推到一个未来时间（防止其他实例再次抓取），
-        // 但保留 last_status / fail_count 不变——业务逻辑在 schedule_next 中再写入真实结果
+        // 为已领取任务写入有限期 lease。实例崩溃后 lease 到期即可被其他实例恢复。
         let ids: Vec<&str> = tasks.iter().map(|t| t.streamer_id.as_str()).collect();
         if !ids.is_empty() {
-            // 用一个足够远的未来时间（1 小时）作为占位，
-            // 业务逻辑在 schedule_next 中覆盖为真实下次时间
-            let placeholder = now + 3600;
             sqlx::query(
                 r#"UPDATE streamer_poll_tasks
-                   SET next_poll_at = $1
+                   SET lease_until = $1
                    WHERE streamer_id = ANY($2)"#,
             )
-            .bind(placeholder)
+            .bind(now + lease_secs)
             .bind(&ids)
             .execute(&mut *tx)
             .await?;
@@ -114,7 +110,8 @@ impl PollStore for PgPollStore {
                SET next_poll_at = $1,
                    last_status = $2,
                    fail_count = $3,
-                   last_poll_at = $4
+                   last_poll_at = $4,
+                   lease_until = NULL
                WHERE streamer_id = $5"#,
         )
         .bind(next_poll_at)
@@ -140,11 +137,7 @@ impl PollStore for PgPollStore {
         Ok(())
     }
 
-    async fn set_enabled(
-        &self,
-        streamer_id: &str,
-        enabled: bool,
-    ) -> Result<(), AppError> {
+    async fn set_enabled(&self, streamer_id: &str, enabled: bool) -> Result<(), AppError> {
         sqlx::query(
             r#"UPDATE streamer_poll_tasks
                SET poll_enabled = $1
