@@ -9,6 +9,7 @@ use crate::services::db;
 use crate::services::douyin::client::DouyinEnterClient;
 use crate::services::douyin::live_checker::{HttpLiveChecker, LiveChecker};
 use crate::services::douyin::streamer_resolver::{HttpStreamerResolver, StreamerResolver};
+use crate::services::feedback_store::{FeedbackStore, PgFeedbackStore};
 use crate::services::notice_store::{NoticeStore, PgNoticeStore};
 use crate::services::push::bark::BarkProvider;
 use crate::services::push::provider::PushProvider;
@@ -36,6 +37,8 @@ pub struct AppState {
     pub push_providers: Vec<Arc<dyn PushProvider>>,
     pub notice_store: Arc<dyn NoticeStore>,
     pub wish_store: Arc<dyn StreamerWishStore>,
+    /// 问题反馈存储
+    pub feedback_store: Arc<dyn FeedbackStore>,
     /// WebSocket 连接管理器（实时通知）
     pub ws_hub: Arc<WsHub>,
 }
@@ -55,6 +58,7 @@ impl AppState {
         push_providers: Vec<Arc<dyn PushProvider>>,
         notice_store: Arc<dyn NoticeStore>,
         wish_store: Arc<dyn StreamerWishStore>,
+        feedback_store: Arc<dyn FeedbackStore>,
         ws_hub: Arc<WsHub>,
     ) -> Self {
         Self {
@@ -70,6 +74,7 @@ impl AppState {
             push_providers,
             notice_store,
             wish_store,
+            feedback_store,
             ws_hub,
         }
     }
@@ -91,7 +96,8 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
     let poll_store: Arc<dyn PollStore> = Arc::new(PgPollStore::new(pool.clone()));
     let push_token_store: Arc<dyn PushTokenStore> = Arc::new(PgPushTokenStore::new(pool.clone()));
     let notice_store: Arc<dyn NoticeStore> = Arc::new(PgNoticeStore::new(pool.clone()));
-    let wish_store: Arc<dyn StreamerWishStore> = Arc::new(PgStreamerWishStore::new(pool));
+    let wish_store: Arc<dyn StreamerWishStore> = Arc::new(PgStreamerWishStore::new(pool.clone()));
+    let feedback_store: Arc<dyn FeedbackStore> = Arc::new(PgFeedbackStore::new(pool));
     let code_store: Arc<dyn CodeStore> = Arc::new(InMemoryCodeStore::new());
     let sms_provider: Arc<dyn SmsProvider> = Arc::new(MockSmsProvider);
 
@@ -122,6 +128,7 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
         push_providers,
         notice_store,
         wish_store,
+        feedback_store,
         ws_hub,
     ))
 }

@@ -14,8 +14,23 @@ async fn main() -> anyhow::Result<()> {
 
     let config = AppConfig::load()?;
 
+    /// 北京时间（UTC+8）日志时间戳，固定偏移不依赖系统 TZ 环境
+    struct BeijingTime;
+
+    impl tracing_subscriber::fmt::time::FormatTime for BeijingTime {
+        fn format_time(
+            &self,
+            w: &mut tracing_subscriber::fmt::format::Writer<'_>,
+        ) -> std::fmt::Result {
+            let offset = chrono::FixedOffset::east_opt(8 * 3600).expect("合法时区偏移");
+            let now = chrono::Utc::now().with_timezone(&offset);
+            write!(w, "{}", now.format("%Y-%m-%d %H:%M:%S%.3f"))
+        }
+    }
+
     let rust_log = config.server.rust_log.clone();
     tracing_subscriber::fmt()
+        .with_timer(BeijingTime)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| rust_log.into()),

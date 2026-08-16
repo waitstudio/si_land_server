@@ -6,6 +6,7 @@
 pub mod code_store;
 pub mod db;
 pub mod douyin;
+pub mod feedback_store;
 pub mod jwt;
 pub mod notice_store;
 pub mod push;

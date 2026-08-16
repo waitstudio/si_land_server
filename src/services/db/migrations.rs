@@ -136,6 +136,9 @@ pub async fn run(pool: &PgPool) -> Result<(), AppError> {
     // 0004：主播想看意愿收集表
     run_0004_streamer_wishes(pool).await?;
 
+    // 0005：问题反馈收集表
+    run_0005_feedback(pool).await?;
+
     tracing::info!("数据库迁移完成");
     Ok(())
 }
@@ -286,5 +289,35 @@ async fn run_0004_streamer_wishes(pool: &PgPool) -> Result<(), AppError> {
     .execute(pool)
     .await
     .map_err(|e| AppError::internal(format!("创建 streamer_wishes 索引失败: {e}")))?;
+    Ok(())
+}
+
+/// 0005 迁移：问题反馈收集表
+///
+/// 收集用户提交的 BUG、功能建议，运营据此跟进改进。
+async fn run_0005_feedback(pool: &PgPool) -> Result<(), AppError> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS feedbacks (
+            id         VARCHAR(64) PRIMARY KEY,
+            user_id    VARCHAR(64) NOT NULL,
+            content    VARCHAR(500) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            CONSTRAINT fk_feedback_user
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::internal(format!("建表 feedbacks 失败: {e}")))?;
+
+    sqlx::query(
+        r#"CREATE INDEX IF NOT EXISTS idx_feedbacks_user_time
+           ON feedbacks (user_id, created_at DESC)"#,
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::internal(format!("创建 feedbacks 索引失败: {e}")))?;
     Ok(())
 }

@@ -11,6 +11,7 @@ use crate::middleware::auth::auth_middleware;
 use crate::state::AppState;
 
 pub mod auth;
+pub mod feedback;
 pub mod notices;
 pub mod push;
 pub mod sms;
@@ -48,7 +49,9 @@ pub fn router(state: AppState) -> Router<AppState> {
         // 推送凭证管理
         .merge(push::router())
         // 开播通知
-        .merge(notices::router());
+        .merge(notices::router())
+        // 问题反馈
+        .route("/feedback", post(feedback::submit));
 
     Router::new()
         .merge(public)

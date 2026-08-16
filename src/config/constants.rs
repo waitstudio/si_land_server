@@ -32,6 +32,15 @@ pub const STREAMER_ID_PREFIX: &str = "st_";
 /// 开播通知 ID 前缀
 pub const NOTICE_ID_PREFIX: &str = "ln_";
 
+/// 问题反馈 ID 前缀
+pub const FEEDBACK_ID_PREFIX: &str = "fb_";
+
+/// 问题反馈内容最大长度（字符）
+pub const FEEDBACK_MAX_CONTENT_LEN: usize = 500;
+
+/// 问题反馈内容最小长度（去除首尾空白后）
+pub const FEEDBACK_MIN_CONTENT_LEN: usize = 1;
+
 /// Token 类型
 pub const TOKEN_TYPE: &str = "Bearer";
 
