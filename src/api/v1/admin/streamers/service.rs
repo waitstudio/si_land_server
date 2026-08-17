@@ -19,10 +19,7 @@ impl AdminStreamerService {
     /// 2. 调用抖音 enter 接口解析 sec_uid / 昵称 / 头像 / 开播状态
     /// 3. 按 sec_uid 查重，已收录则返回 Conflict
     /// 4. 写入 streamers 表并确保轮询任务存在（收录即进入开播检测）
-    pub async fn add_streamer(
-        state: &AppState,
-        douyin_id: &str,
-    ) -> Result<Streamer, AppError> {
+    pub async fn add_streamer(state: &AppState, douyin_id: &str) -> Result<Streamer, AppError> {
         let trimmed = douyin_id.trim();
         douyin_id::validate(trimmed)?;
 
@@ -50,7 +47,10 @@ impl AdminStreamerService {
             live_started_at: if resolved.is_live { Some(now) } else { None },
             popularity: 0,
         };
-        state.subscription_store.save_streamer(streamer.clone()).await?;
+        state
+            .subscription_store
+            .save_streamer(streamer.clone())
+            .await?;
         // 收录即开始轮询开播状态（幂等）
         let _ = state.poll_store.ensure_task(&streamer.id).await;
 

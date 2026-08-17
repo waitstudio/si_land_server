@@ -17,7 +17,7 @@ use crate::services::push::bark::BarkProvider;
 use crate::services::push::provider::PushProvider;
 use crate::services::push::token_store::{PgPushTokenStore, PushTokenStore};
 use crate::services::scheduler::PollScheduler;
-use crate::services::scheduler::poll_store::{PgPollStore, PollStore};
+use crate::services::scheduler::redis_poll_store::{PollStore, RedisPollStore};
 use crate::services::sms_provider::{MockSmsProvider, SmsProvider};
 use crate::services::streamer_wish_store::{PgStreamerWishStore, StreamerWishStore};
 use crate::services::subscription_store::{PgSubscriptionStore, SubscriptionStore};
@@ -107,7 +107,8 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
     let user_store: Arc<dyn UserStore> = Arc::new(PgUserStore::new(pool.clone()));
     let subscription_store: Arc<dyn SubscriptionStore> =
         Arc::new(PgSubscriptionStore::new(pool.clone()));
-    let poll_store: Arc<dyn PollStore> = Arc::new(PgPollStore::new(pool.clone()));
+    let poll_store: Arc<dyn PollStore> =
+        Arc::new(RedisPollStore::new(&config.redis.url, pool.clone())?);
     let push_token_store: Arc<dyn PushTokenStore> = Arc::new(PgPushTokenStore::new(pool.clone()));
     let notice_store: Arc<dyn NoticeStore> = Arc::new(PgNoticeStore::new(pool.clone()));
     let wish_store: Arc<dyn StreamerWishStore> = Arc::new(PgStreamerWishStore::new(pool.clone()));

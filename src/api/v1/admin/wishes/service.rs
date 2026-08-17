@@ -9,10 +9,7 @@ pub struct AdminWishService;
 
 impl AdminWishService {
     /// 想看意愿列表（按想看人数降序）
-    pub async fn list_wishes(
-        state: &AppState,
-        limit: i64,
-    ) -> Result<Vec<StreamerWish>, AppError> {
+    pub async fn list_wishes(state: &AppState, limit: i64) -> Result<Vec<StreamerWish>, AppError> {
         let limit = limit.clamp(1, constants::POPULAR_MAX_LIMIT);
         state.wish_store.list_wishes(limit).await
     }

@@ -29,11 +29,17 @@ pub async fn auth_middleware(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| {
-            AppError::new(crate::response::BizCode::Unauthorized, "缺少 Authorization 头")
+            AppError::new(
+                crate::response::BizCode::Unauthorized,
+                "缺少 Authorization 头",
+            )
         })?;
 
     let token = extract_bearer(auth_header).ok_or_else(|| {
-        AppError::new(crate::response::BizCode::Unauthorized, "无效的 Authorization 格式")
+        AppError::new(
+            crate::response::BizCode::Unauthorized,
+            "无效的 Authorization 格式",
+        )
     })?;
 
     let claims = verify(token, &state.config.jwt.secret)?;

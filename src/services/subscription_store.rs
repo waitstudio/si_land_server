@@ -47,6 +47,8 @@ pub trait SubscriptionStore: Send + Sync {
         nickname: Option<&str>,
         avatar: Option<&str>,
     ) -> Result<Option<Streamer>, AppError>;
+    /// 查询订阅某主播的所有用户 ID（用于开播通知）
+    async fn list_subscribers(&self, streamer_id: &str) -> Result<Vec<String>, AppError>;
 }
 
 /// PostgreSQL 实现
@@ -73,7 +75,8 @@ impl SubscriptionStore for PgSubscriptionStore {
                 nickname        = EXCLUDED.nickname,
                 avatar          = EXCLUDED.avatar,
                 live            = EXCLUDED.live,
-                live_started_at = EXCLUDED.live_started_at
+                live_started_at = EXCLUDED.live_started_at,
+                updated_at      = NOW()
             "#,
         )
         .bind(&streamer.id)
@@ -164,10 +167,14 @@ impl SubscriptionStore for PgSubscriptionStore {
     }
 
     async fn inc_popularity(&self, streamer_id: &str) -> Result<(), AppError> {
-        sqlx::query(r#"UPDATE streamers SET popularity = popularity + 1 WHERE id = $1"#)
-            .bind(streamer_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            r#"UPDATE streamers
+               SET popularity = popularity + 1, updated_at = NOW()
+               WHERE id = $1"#,
+        )
+        .bind(streamer_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -183,7 +190,8 @@ impl SubscriptionStore for PgSubscriptionStore {
         let sql = format!(
             "UPDATE streamers SET live = $1, live_started_at = $2, \
                                  nickname = COALESCE($3, nickname), \
-                                 avatar = COALESCE($4, avatar) \
+                                 avatar = COALESCE($4, avatar), \
+                                 updated_at = NOW() \
              WHERE id = $5 RETURNING {STREAMER_COLUMNS}"
         );
         let row = sqlx::query_as::<_, Streamer>(&sql)
@@ -195,5 +203,15 @@ impl SubscriptionStore for PgSubscriptionStore {
             .fetch_optional(&self.pool)
             .await?;
         Ok(row)
+    }
+
+    async fn list_subscribers(&self, streamer_id: &str) -> Result<Vec<String>, AppError> {
+        let rows = sqlx::query_scalar::<_, String>(
+            r#"SELECT user_id FROM subscriptions WHERE streamer_id = $1"#,
+        )
+        .bind(streamer_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
     }
 }

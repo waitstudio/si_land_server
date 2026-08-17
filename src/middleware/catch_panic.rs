@@ -3,9 +3,9 @@
 //! 配合 `tower_http::catch_panic::CatchPanicLayer::custom` 使用，
 //! 把 panic 转成统一 ApiResponse 格式，防止单个请求 panic 断连其他请求。
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 
 use crate::response::{ApiResponse, BizCode};
 

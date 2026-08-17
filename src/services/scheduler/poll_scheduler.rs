@@ -1,32 +1,33 @@
-//! 轮询调度器
+//! 轮询调度器（Redis 驱动）
 //!
-//! 数据库驱动调度模式：单个常驻循环 + 短期异步任务。
-//! - 每 [PollConfig::loop_interval_secs] 查询 next_poll_at <= now 且 poll_enabled=TRUE 的任务
-//! - 用 FOR UPDATE SKIP LOCKED 避免多实例重复争抢
+//! 取出-执行-放回模式：
+//! - 启动对账：streamers 全表同步任务队列（bootstrap）
+//! - 每 [PollConfig::loop_interval_secs] 领取到期任务（claim，ZREM 原子抢占）
+//! - 检测后按自适应间隔归还（complete），实例崩溃由 inflight 兜底回收
+//! - 主播快照缓存于 Redis：与抖音接口结果对比，仅在变更时写 DB 并失效缓存
 //! - 用 tokio Semaphore 限制抖音接口全局并发
-//! - 自适应间隔：直播短间隔、未播常规、失败指数退避 + 随机抖动
-//! - 状态持久化到 Postgres，重启可自动恢复
 
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
 use crate::config::AppConfig;
-use crate::domain::scheduler::PollTask;
 use crate::error::AppError;
 use crate::services::douyin::live_checker::LiveChecker;
 use crate::services::notice_store::NoticeStore;
 use crate::services::notification_queue::NotificationQueue;
 use crate::services::scheduler::adaptive_interval::next_poll_at;
-use crate::services::scheduler::poll_store::PollStore;
+use crate::services::scheduler::redis_poll_store::{PollSnapshot, PollStore};
 use crate::services::subscription_store::SubscriptionStore;
 use crate::utils::time;
 
+/// 意外失败后的兜底归还间隔（固定 60s，正常退避由快照 fail_count 驱动）
+const FAILURE_FALLBACK_SECS: i64 = 60;
+
 /// 轮询调度器
 ///
-/// 持有所有依赖的 Arc，通过 [Self::run] 启动常驻循环。
 /// main.rs 中通过 `tokio::spawn(scheduler.run())` 启动，
-/// 程序退出时 task 被取消，状态已持久化到 DB，重启自动恢复。
+/// 程序退出时 task 被取消，任务状态在 Redis，重启自动恢复。
 pub struct PollScheduler {
     cfg: Arc<AppConfig>,
     poll_store: Arc<dyn PollStore>,
@@ -62,16 +63,21 @@ impl PollScheduler {
 
     /// 启动常驻调度循环
     ///
-    /// 每隔 loop_interval_secs 秒抓取一批到期任务，为每个任务生成短期异步任务执行检测。
-    /// 循环本身不阻塞业务逻辑，所有检测并发执行（受 semaphore 限制）。
+    /// 先执行启动对账（streamers 全表 → Redis 任务队列），
+    /// 再进入领取-处理-归还循环，每轮顺带回收超时 inflight 任务。
     pub async fn run(self: Arc<Self>) {
-        let interval = std::time::Duration::from_secs(self.cfg.poll.loop_interval_secs);
         tracing::info!(
-            "轮询调度器启动，间隔 {}s，并发上限 {}",
+            "轮询调度器启动（Redis 驱动），间隔 {}s，并发上限 {}",
             self.cfg.poll.loop_interval_secs,
             self.cfg.poll.max_concurrency
         );
 
+        match self.poll_store.bootstrap().await {
+            Ok(count) => tracing::info!("启动对账完成，{} 个主播纳入轮询", count),
+            Err(error) => tracing::error!(?error, "启动对账失败，等待下一轮对账"),
+        }
+
+        let interval = std::time::Duration::from_secs(self.cfg.poll.loop_interval_secs);
         loop {
             if let Err(e) = Self::tick(Arc::clone(&self)).await {
                 tracing::warn!("调度循环异常: {:?}", e);
@@ -80,26 +86,33 @@ impl PollScheduler {
         }
     }
 
-    /// 单次调度：抓取一批任务并并发执行检测
+    /// 单次调度：回收超时任务 → 领取一批 → 并发执行检测
     async fn tick(self: Arc<Self>) -> Result<(), AppError> {
         let now = time::now_ts();
-        let tasks = self
+
+        // 实例崩溃兜底：超时未归还的任务放回队列
+        let recovered = self.poll_store.recover_inflight(now).await?;
+        if recovered > 0 {
+            tracing::warn!("回收 {} 个超时未归还的轮询任务", recovered);
+        }
+
+        let streamer_ids = self
             .poll_store
-            .fetch_due(
+            .claim(
                 now,
                 self.cfg.poll.batch_size,
                 self.cfg.poll.check_timeout_secs.saturating_add(30) as i64,
             )
             .await?;
 
-        if tasks.is_empty() {
+        if streamer_ids.is_empty() {
             return Ok(());
         }
 
-        tracing::debug!("本轮调度 {} 个主播", tasks.len());
+        tracing::debug!("本轮调度 {} 个主播", streamer_ids.len());
 
-        let mut handles = Vec::with_capacity(tasks.len());
-        for task in tasks {
+        let mut handles = Vec::with_capacity(streamer_ids.len());
+        for streamer_id in streamer_ids {
             let scheduler = Arc::clone(&self);
             let permit = scheduler.semaphore.clone();
             handles.push(tokio::spawn(async move {
@@ -111,13 +124,17 @@ impl PollScheduler {
                         return;
                     }
                 };
-                if let Err(e) = scheduler.process_task(&task).await {
-                    tracing::warn!("处理主播 {} 失败: {:?}", task.streamer_id, e);
-                    if let Err(reschedule_error) = scheduler.reschedule_failure(&task).await {
+                if let Err(e) = scheduler.process_task(&streamer_id).await {
+                    tracing::warn!("处理主播 {} 失败: {:?}", streamer_id, e);
+                    // 兜底归还：保证任务不滞留 inflight 等待超时回收
+                    let fallback = time::now_ts() + FAILURE_FALLBACK_SECS;
+                    if let Err(recover_error) =
+                        scheduler.poll_store.complete(&streamer_id, fallback).await
+                    {
                         tracing::error!(
-                            "恢复主播 {} 的轮询任务失败: {:?}",
-                            task.streamer_id,
-                            reschedule_error
+                            "兜底归还主播 {} 任务失败: {:?}",
+                            streamer_id,
+                            recover_error
                         );
                     }
                 }
@@ -131,27 +148,29 @@ impl PollScheduler {
         Ok(())
     }
 
-    async fn reschedule_failure(&self, task: &PollTask) -> Result<(), AppError> {
-        let now = time::now_ts();
-        let fail_count = task.fail_count.saturating_add(1);
-        let next = next_poll_at(now, task.is_live(), fail_count, &self.cfg.poll);
-        self.poll_store
-            .schedule_next(&task.streamer_id, next, task.last_status, fail_count)
-            .await
-    }
-
     /// 处理单个主播的轮询任务
-    async fn process_task(&self, task: &PollTask) -> Result<(), AppError> {
-        let streamer = self
-            .subscription_store
-            .get_streamer(&task.streamer_id)
-            .await?
-            .ok_or_else(|| AppError::not_found(format!("主播 {} 不存在", task.streamer_id)))?;
+    ///
+    /// 快照 miss 时从 streamers 表回填；与抖音接口结果对比，
+    /// 仅在变更时写 DB 并失效缓存，无变更只更新快照内的轮询状态。
+    async fn process_task(&self, streamer_id: &str) -> Result<(), AppError> {
+        let mut snapshot = match self.poll_store.get_snapshot(streamer_id).await? {
+            Some(s) => s,
+            None => {
+                let streamer = self
+                    .subscription_store
+                    .get_streamer(streamer_id)
+                    .await?
+                    .ok_or_else(|| AppError::not_found(format!("主播 {} 不存在", streamer_id)))?;
+                let snapshot = PollSnapshot::from(streamer);
+                self.poll_store.save_snapshot(&snapshot).await?;
+                snapshot
+            }
+        };
 
         // 设置超时保护，避免单次请求卡住整个调度
         let check_result = tokio::time::timeout(
             std::time::Duration::from_secs(self.cfg.poll.check_timeout_secs),
-            self.live_checker.check(&streamer.douyin_id),
+            self.live_checker.check(&snapshot.douyin_id),
         )
         .await;
 
@@ -166,50 +185,63 @@ impl PollScheduler {
                 status.room_title,
             ),
             Ok(Err(e)) => {
-                tracing::warn!("检测 {} 开播状态失败: {:?}", streamer.douyin_id, e);
-                (task.is_live(), task.fail_count + 1, None, None, None)
+                tracing::warn!("检测 {} 开播状态失败: {:?}", snapshot.douyin_id, e);
+                (snapshot.live, snapshot.fail_count + 1, None, None, None)
             }
             Err(_) => {
-                tracing::warn!("检测 {} 超时", streamer.douyin_id);
-                (task.is_live(), task.fail_count + 1, None, None, None)
+                tracing::warn!("检测 {} 超时", snapshot.douyin_id);
+                (snapshot.live, snapshot.fail_count + 1, None, None, None)
             }
         };
 
-        // 持久化状态到 streamers 表（同时同步昵称/头像）
-        let became_live = !task.is_live() && is_live;
+        let became_live = !snapshot.live && is_live;
         let now = time::now_ts();
-        let live_started_at = if is_live { Some(now) } else { None };
-        let _ = self
-            .subscription_store
-            .set_live(
-                &streamer.id,
-                is_live,
-                live_started_at,
-                nickname.as_deref(),
-                avatar.as_deref(),
-            )
-            .await?;
 
-        // 计算下次轮询时间并持久化调度任务
-        let next = next_poll_at(now, is_live, fail_count, &self.cfg.poll);
-        let last_status: i16 = if fail_count > 0 {
-            task.last_status // 失败时不更新 last_status
-        } else if is_live {
-            1
+        // 变更判定：开播状态切换，或昵称/头像与快照不一致（抖音未返回的空值跳过）
+        let profile_changed = nickname
+            .as_deref()
+            .is_some_and(|n| !n.is_empty() && n != snapshot.nickname)
+            || avatar
+                .as_deref()
+                .is_some_and(|a| !a.is_empty() && a != snapshot.avatar);
+        if is_live != snapshot.live || profile_changed {
+            // 开播时间：未播→在播取 now；在播持续保留原值（首次开播时间不被覆盖）
+            let live_started_at = if is_live {
+                Some(snapshot.live_started_at.unwrap_or(now))
+            } else {
+                None
+            };
+            self.subscription_store
+                .set_live(
+                    streamer_id,
+                    is_live,
+                    live_started_at,
+                    nickname.as_deref(),
+                    avatar.as_deref(),
+                )
+                .await?;
+            // DB 已更新，删除缓存快照，下轮回填最新值
+            self.poll_store.invalidate_snapshot(streamer_id).await?;
         } else {
-            2
-        };
-        self.poll_store
-            .schedule_next(&task.streamer_id, next, last_status, fail_count)
-            .await?;
+            // 无变更：不写 DB，仅更新快照轮询状态
+            snapshot.live = is_live;
+            snapshot.fail_count = fail_count;
+            self.poll_store.save_snapshot(&snapshot).await?;
+        }
+
+        // 按自适应间隔归还任务
+        let next = next_poll_at(now, is_live, fail_count, &self.cfg.poll);
+        self.poll_store.complete(streamer_id, next).await?;
 
         // 状态从【未播→开播】时，先入库通知再按在线/离线分流推送
         if became_live {
+            let nickname_for_notice = nickname.unwrap_or_else(|| snapshot.nickname.clone());
+            let avatar_for_notice = avatar.unwrap_or_else(|| snapshot.avatar.clone());
             self.notify_subscribers(
-                &streamer.nickname,
-                Some(streamer.avatar.as_str()),
-                &task.streamer_id,
-                live_started_at,
+                &nickname_for_notice,
+                Some(avatar_for_notice.as_str()),
+                streamer_id,
+                Some(now),
                 room_title.as_deref(),
             )
             .await;
@@ -226,7 +258,7 @@ impl PollScheduler {
         live_started_at: Option<i64>,
         room_title: Option<&str>,
     ) {
-        let user_ids = match self.poll_store.list_subscribers(streamer_id).await {
+        let user_ids = match self.subscription_store.list_subscribers(streamer_id).await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("查询订阅者失败: {:?}", e);

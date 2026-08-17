@@ -1,249 +1,75 @@
 # si_land_server
 
-硅基星球（si_land）项目后端服务，基于 Rust + [axum](https://github.com/tokio-rs/axum) 构建。
+矽澜（si_land）后端服务，基于 Rust + axum 构建。围绕「抖音主播开播订阅通知」场景，提供从用户认证、主播订阅、开播轮询到消息推送的完整服务端能力。
 
-> 当前为 **Mock 阶段**：接口契约与分层架构已就绪，外部依赖（短信通道、验证码存储）用内存实现，未接真实 DB / 短信通道。
+配套项目：[si_land_client](https://github.com/waitstudio/si_land_client)（Flutter 移动端） / [si_land_admin](https://github.com/waitstudio/si_land_admin)（管理后台）。
+
+## 功能特性
+
+### 用户与认证
+- 手机号验证码登录，JWT 鉴权
+- 验证码基于 Redis 存储，支持有效期控制、重发冷却、每小时发送上限与验证失败次数限制
+
+### 主播订阅
+- 热门主播列表：按人气降序展示，最多返回前 100 名
+- 订阅 / 取消订阅主播（用户仅可订阅热门主播池中的主播）
+- 想看意愿提交：暂未支持的主播可提交「想看」，按需扩充主播池
+- 主播信息自动解析：通过抖音号解析 sec_uid、昵称、头像与开播状态
+
+### 开播检测与轮询调度
+- 开播状态检测：抽象 `LiveChecker` trait，当前实现基于抖音 enter 接口判断开播状态
+- 单主播主动检测 + 订阅批量轮询两种模式
+- 分布式轮询调度：Redis ZSet 任务队列 + inflight 在途队列，取出-执行-放回模式，进程崩溃后自动回收在途任务重新调度
+- 轮询间隔按主播热度分级，热门主播检测更频繁
+
+### 通知投递
+- 在线用户：WebSocket 实时推送开播通知与未读数
+- 离线用户：通过 Bark 走系统级推送
+- Outbox 模式解耦：通知先落库再异步投递，投递失败自动重试，避免推送阻塞业务与消息丢失
+- Kafka 消费通知事件，支持指数退避重试
+
+### 管理后台接口
+- 管理员登录（内置账号由环境变量配置，无数据库表）
+- 手动添加主播：输入抖音号，自动完成解析 → 查重 → 入库 → 创建轮询任务
+- 管理员与普通用户接口按 `/api/v1/admin/*` 与 `/api/v1/app/*` 前缀隔离，双层鉴权
+
+### 基础设施
+- 启动时自动执行幂等数据库迁移（CREATE TABLE IF NOT EXISTS），无需额外迁移工具
+- 统一响应体 `{code, msg, data}` 与业务错误码
+- 日志固定北京时间输出（毫秒精度）
+- ULID 作为统一 ID 生成算法
 
 ## 技术栈
 
-- 语言：Rust（edition 2024）
-- Web 框架：axum 0.8
-- 异步运行时：tokio
-- 中间件：tower / tower-http（CORS、Trace）
-- 日志：tracing + tracing-subscriber
-- 配置：dotenv（`.env`）
-- 基础设施：PostgreSQL 16 + Redis 7（由 docker-compose 管理）
+Rust · axum · tokio · sqlx · PostgreSQL · Redis · Kafka（rdkafka）
 
-## 架构概览
+## 运行流程
 
-采用 **分层 + trait 抽象** 架构，关注点分离，便于扩展与替换：
-
-```
-HTTP 请求
-   │
-   ▼
-routes.rs            路由聚合（含 /health）
-   │
-   ▼
-api/v1/<模块>        表现层：handler（HTTP 适配）+ dto（入参出参）+ service（业务编排）
-   │  handler 只做参数解析与响应组装，不写业务逻辑
-   │  service 调用 domain 与 infra trait 编排业务
-   ▼
-domain/              领域层：纯业务模型（User、SmsCode），不依赖 HTTP/IO
-   │
-   ▼
-services/            基础设施层：trait 定义 + mock 实现
-   │  SmsProvider  —— 短信通道（MockSmsProvider 仅日志）
-   │  CodeStore    —— 验证码与限流存储（Redis）
-   ▼
-state.rs             AppState：依赖注入，持有 trait 对象（Arc<dyn ...>）
-config.rs            配置集中管理
-error.rs             统一错误 + IntoResponse
-response.rs          统一响应体 + 业务码
-```
-
-### 扩展指引
-
-- **新增功能模块**：在 `src/api/v1/` 下新建目录（`mod.rs` + `handler.rs` + `dto.rs` + `service.rs`），在 `api/v1/mod.rs` 注册路由即可。
-- **替换短信通道为阿里云/腾讯云**：实现 `SmsProvider` trait，在 `state::build_state` 替换注入即可，业务代码不动。
-- **替换验证码存储为 Redis**：实现 `CodeStore` trait，在 `state::build_state` 替换注入即可。
-- **接入数据库**：在 `services/` 下新增 `user_repository` 等 trait + 实现，service 层调用。
-
-## 目录结构
-
-```
-si_land_server/
-├── src/
-│   ├── main.rs              # 入口：加载配置、构建 state、启动服务
-│   ├── lib.rs               # 库入口（便于集成测试）
-│   ├── config.rs            # AppConfig：从环境变量读取
-│   ├── error.rs             # AppError + IntoResponse
-│   ├── response.rs          # ApiResponse<T> + BizCode
-│   ├── state.rs             # AppState + build_state（依赖注入）
-│   ├── routes.rs            # 路由聚合
-│   ├── middleware.rs        # 请求日志等中间件
-│   ├── api/
-│   │   ├── mod.rs           # /api 嵌套
-│   │   └── v1/
-│   │       ├── mod.rs       # v1 路由聚合
-│   │       ├── sms/         # 短信验证码模块
-│   │       │   ├── mod.rs
-│   │       │   ├── handler.rs
-│   │       │   ├── dto.rs
-│   │       │   └── service.rs
-│   │       └── auth/        # 认证模块
-│   │           ├── mod.rs
-│   │           ├── handler.rs
-│   │           ├── dto.rs
-│   │           └── service.rs
-│   ├── domain/              # 领域模型
-│   │   ├── user.rs
-│   │   └── sms.rs
-│   ├── services/            # 基础设施 trait + mock 实现
-│   │   ├── sms_provider.rs
-│   │   └── code_store.rs
-│   └── utils/
-│       └── phone.rs         # 手机号校验
-├── docker-compose.yml       # PostgreSQL + Redis
-├── .env.example             # 环境变量示例
-└── Cargo.toml
-```
-
-## 快速开始
-
-### 1. 启动依赖（PostgreSQL + Redis）
+环境要求：Rust（edition 2024）、Docker（含 docker compose 插件）。
 
 ```bash
-cd si_land_server
-cp .env.example .env       # 按需修改密码 / 端口
-docker compose up -d       # 启动 postgres 与 redis
-docker compose ps          # 查看状态
-```
+# 1. 准备配置（按需修改数据库口令、JWT_SECRET、管理员账号等）
+cp .env.example .env
 
-### 2. 运行服务
+# 2. 启动基础设施：PostgreSQL + Redis + Kafka
+docker compose up -d
 
-```bash
-cargo run                 # 默认监听 0.0.0.0:8080
-```
+# 3. 启动服务（首次启动自动执行幂等数据库迁移，默认监听 0.0.0.0:8080）
+cargo run
 
-看到 `🚀 si_land_server listening on http://0.0.0.0:8080` 即启动成功。
-
-### 3. 验证接口
-
-```bash
-# 健康检查
+# 4. 验证
 curl http://localhost:8080/health
-
-# 发送验证码（mock：默认固定验证码 1234，可在日志看到）
-curl -X POST http://localhost:8080/api/v1/sms/send \
-  -H 'Content-Type: application/json' \
-  -d '{"phone":"13800138000"}'
-
-# 验证码登录
-curl -X POST http://localhost:8080/api/v1/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"phone":"13800138000","code":"1234"}'
 ```
 
-## API 接口
+说明：
+- 管理员账号由 `.env` 中 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 配置，供 [si_land_admin](https://github.com/waitstudio/si_land_admin) 登录使用。
+- 开发联调可将 `MOCK_FIXED_CODE` 设为固定验证码（如 `1234`），跳过真实短信通道。
+- 停止基础设施：`docker compose down`；清理数据卷：`docker compose down -v`。
 
-所有响应统一格式：
+## 免责声明
 
-```json
-{
-  "code": 0,
-  "msg": "success",
-  "data": { ... }
-}
-```
-
-`code = 0` 表示成功，其余为业务错误码。
-
-### 健康检查
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/health` | 服务存活探针，返回版本号 |
-
-### 短信验证码
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/v1/sms/send` | 向指定手机号发送验证码 |
-
-请求体：
-```json
-{ "phone": "13800138000" }
-```
-
-响应（mock）：
-```json
-{
-  "code": 0,
-  "msg": "success",
-  "data": { "phone": "13800138000", "expire_in": 300 }
-}
-```
-
-> Mock 行为：不真正发送短信。配置 `MOCK_FIXED_CODE=1234` 时验证码固定为 `1234`（日志可见）；留空则随机 6 位。
-
-### 验证码登录
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/v1/auth/login` | 校验验证码并登录，返回 Token |
-
-请求体：
-```json
-{ "phone": "13800138000", "code": "1234" }
-```
-
-响应（mock）：
-```json
-{
-  "code": 0,
-  "msg": "success",
-  "data": {
-    "token": "mock-token-u_8000",
-    "token_type": "Bearer",
-    "expires_at": 1786000000,
-    "user": {
-      "user_id": "u_8000",
-      "phone": "13800138000",
-      "nickname": "硅基星球用户",
-      "avatar": ""
-    }
-  }
-}
-```
-
-### 业务错误码
-
-| code | 含义 |
-| --- | --- |
-| 0 | 成功 |
-| 1001 | 参数不合法（手机号格式错误等） |
-| 1002 | 验证码错误 |
-| 1003 | 验证码已过期 |
-| 1004 | 手机号未注册 |
-| 1005 | 未授权 |
-| 5000 | 服务内部错误 |
-
-## 配置项
-
-通过 `.env` 配置，详见 `.env.example`：
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `SERVER_HOST` | `0.0.0.0` | 监听地址 |
-| `SERVER_PORT` | `8080` | 监听端口 |
-| `RUST_LOG` | `si_land_server=debug,tower_http=debug` | 日志级别 |
-| `DATABASE_URL` | `postgres://siland:siland123@localhost:5432/siland` | PostgreSQL 连接串 |
-| `REDIS_URL` | `redis://:siland123@localhost:6379/0` | Redis 连接串 |
-| `JWT_SECRET` | `please-change-me-in-production` | JWT 签名密钥 |
-| `JWT_EXPIRES_HOURS` | `168` | Token 有效期（小时） |
-| `SMS_CODE_EXPIRE_IN` | `300` | 验证码有效期（秒） |
-| `SMS_CODE_RESEND_COOLDOWN` | `60` | 重发冷却（秒） |
-| `MOCK_FIXED_CODE` | `1234` | 固定验证码（留空则随机 6 位） |
-
-## 常用命令
-
-```bash
-docker compose up -d          # 启动 postgres + redis
-docker compose down           # 停止
-docker compose down -v        # 停止并删除数据卷
-cargo build --release         # 构建生产产物
-cargo run                     # 开发运行
-cargo fmt                     # 格式化
-cargo clippy                  # 静态检查
-cargo test                    # 测试（含集成测试，基于 lib.rs）
-```
-
-## 后续路线（业务实现阶段）
-
-- [ ] 接入 sqlx + PostgreSQL，建表与迁移
-- [x] 使用 `RedisCodeStore` 持久化验证码并执行手机号限流
-- [ ] 实现真实 `SmsProvider`（阿里云 / 腾讯云）
-- [ ] JWT 签发与鉴权中间件
-- [ ] 用户体系、注册流程
-- [ ] 限流中间件（基于 Redis）
+1. 本项目**仅供个人学习与技术研究用途**，严禁用于任何商业用途或违法违规用途。
+2. 本项目涉及对第三方平台（抖音）数据的访问与解析，相关实现仅用于技术研究演示。使用者应遵守抖音平台的相关服务条款与 robots 协议，不得对平台服务造成干扰或滥用其接口。
+3. 本项目不提供任何明示或默示的保证，不对数据的准确性、完整性与时效性作任何承诺。使用者因使用本项目产生的任何直接或间接损失，作者不承担任何责任。
+4. 开播状态、主播信息等数据版权归原平台及主播所有。若相关权利人认为本项目侵犯了其合法权益，请通过 Issue 联系，核实后将及时处理。
+5. 使用本项目产生的任何行为与后果，均由使用者本人承担。请在使用前了解并遵守您所在地区及目标平台适用的法律法规。

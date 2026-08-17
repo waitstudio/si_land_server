@@ -1,8 +1,8 @@
 //! 推送凭证 handler
 
-use axum::{extract::State, Extension, Json};
-use axum::routing::{delete, post};
 use axum::Router;
+use axum::routing::{delete, post};
+use axum::{Extension, Json, extract::State};
 use serde::Serialize;
 
 use crate::error::AppError;

@@ -1,6 +1,6 @@
 //! 路由聚合
 
-use axum::{routing::get, Json, Router};
+use axum::{Json, Router, routing::get};
 use serde::Serialize;
 
 use crate::api;

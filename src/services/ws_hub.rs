@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use axum::extract::ws::Message;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 /// 每用户允许的最大并发连接数（超出时关闭最旧的接收端）
 const MAX_CONNECTIONS_PER_USER: usize = 5;
@@ -33,7 +33,10 @@ impl WsHub {
     ///
     /// tx 由调用方保存，会话结束时传给 [WsHub::unregister]；
     /// rx 由会话 task 持有并消费。
-    pub fn register(&self, user_id: &str) -> (UnboundedSender<Message>, UnboundedReceiver<Message>) {
+    pub fn register(
+        &self,
+        user_id: &str,
+    ) -> (UnboundedSender<Message>, UnboundedReceiver<Message>) {
         let (tx, rx) = unbounded_channel();
         let mut map = self.inner.write().expect("WsHub 锁中毒");
         let list = map.entry(user_id.to_string()).or_default();

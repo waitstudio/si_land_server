@@ -17,10 +17,7 @@ impl PushService {
         if token.trim().is_empty() {
             return Err(AppError::invalid_param("token 不能为空"));
         }
-        state
-            .push_token_store
-            .save(user_id, channel, token)
-            .await
+        state.push_token_store.save(user_id, channel, token).await
     }
 
     /// 列出当前用户所有推送凭证

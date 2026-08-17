@@ -1,8 +1,8 @@
 //! 主播订阅 handler
 
 use axum::{
-    extract::{Path, Query, State},
     Extension, Json,
+    extract::{Path, Query, State},
 };
 use serde::Deserialize;
 
@@ -52,7 +52,9 @@ pub async fn add_wish(
     Json(req): Json<WishRequest>,
 ) -> Result<Json<ApiResponse<WishResponse>>, AppError> {
     let count = StreamerService::add_wish(&state, &req.douyin_id).await?;
-    Ok(Json(ApiResponse::success(WishResponse { want_count: count })))
+    Ok(Json(ApiResponse::success(WishResponse {
+        want_count: count,
+    })))
 }
 
 /// GET /api/v1/app/streamers

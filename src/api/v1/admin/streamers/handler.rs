@@ -1,6 +1,6 @@
 //! 管理员主播收录 handler
 
-use axum::{extract::State, Json};
+use axum::{Json, extract::State};
 
 use crate::domain::streamer::Streamer;
 use crate::error::AppError;

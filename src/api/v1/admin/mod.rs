@@ -4,9 +4,9 @@
 //! - 管理员路由：经 `auth_middleware` 校验 JWT 后，再由 `admin_guard`
 //!   校验 token 主体为内置管理员，App 端用户 token 无法访问
 
+use axum::Router;
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::{get, post};
-use axum::Router;
 
 use crate::middleware::auth::{admin_guard, auth_middleware};
 use crate::state::AppState;
@@ -35,13 +35,11 @@ pub fn router(state: AppState) -> Router<AppState> {
         // 想看意愿查询
         .route("/wishes", get(wishes::list_wishes));
 
-    Router::new()
-        .merge(public)
-        .merge(
-            protected
-                // route_layer 为洋葱模型：后添加的在外层。
-                // 请求先过 auth_middleware（校验 JWT 并注入 UserId），再过 admin_guard。
-                .route_layer(from_fn(admin_guard))
-                .route_layer(from_fn_with_state(state, auth_middleware)),
-        )
+    Router::new().merge(public).merge(
+        protected
+            // route_layer 为洋葱模型：后添加的在外层。
+            // 请求先过 auth_middleware（校验 JWT 并注入 UserId），再过 admin_guard。
+            .route_layer(from_fn(admin_guard))
+            .route_layer(from_fn_with_state(state, auth_middleware)),
+    )
 }

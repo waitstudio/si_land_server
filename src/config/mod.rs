@@ -173,7 +173,7 @@ impl AppConfig {
                 resend_cooldown: env::parse_or("SMS_CODE_RESEND_COOLDOWN", 60),
                 code_length: env::parse_or("SMS_CODE_LENGTH", 6),
                 mock_fixed_code: env::optional("MOCK_FIXED_CODE"),
-                default_nickname: env::or("DEFAULT_USER_NICKNAME", "硅基星球用户"),
+                default_nickname: env::or("DEFAULT_USER_NICKNAME", "矽澜用户"),
                 max_sends_per_hour: env::parse_or("SMS_MAX_SENDS_PER_HOUR", 5),
                 max_verify_attempts: env::parse_or("SMS_MAX_VERIFY_ATTEMPTS", 5),
             },

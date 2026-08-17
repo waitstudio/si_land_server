@@ -47,11 +47,7 @@ impl NoticeService {
     /// 删除单条通知
     ///
     /// 通知不存在或不属于该用户时返回 NotFound。
-    pub async fn delete(
-        state: &AppState,
-        user_id: &str,
-        notice_id: &str,
-    ) -> Result<(), AppError> {
+    pub async fn delete(state: &AppState, user_id: &str, notice_id: &str) -> Result<(), AppError> {
         let deleted = state.notice_store.delete(user_id, notice_id).await?;
         if !deleted {
             return Err(AppError::not_found("通知不存在"));

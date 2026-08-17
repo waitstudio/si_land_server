@@ -116,12 +116,11 @@ impl NoticeStore for PgNoticeStore {
         .fetch_all(&self.pool)
         .await?;
 
-        let total: i64 = sqlx::query_scalar(
-            r#"SELECT COUNT(*) FROM live_notices WHERE user_id = $1"#,
-        )
-        .bind(user_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let total: i64 =
+            sqlx::query_scalar(r#"SELECT COUNT(*) FROM live_notices WHERE user_id = $1"#)
+                .bind(user_id)
+                .fetch_one(&self.pool)
+                .await?;
 
         Ok((items, total))
     }
@@ -160,13 +159,11 @@ impl NoticeStore for PgNoticeStore {
     }
 
     async fn delete(&self, user_id: &str, notice_id: &str) -> Result<bool, AppError> {
-        let rows = sqlx::query(
-            r#"DELETE FROM live_notices WHERE id = $1 AND user_id = $2"#,
-        )
-        .bind(notice_id)
-        .bind(user_id)
-        .execute(&self.pool)
-        .await?;
+        let rows = sqlx::query(r#"DELETE FROM live_notices WHERE id = $1 AND user_id = $2"#)
+            .bind(notice_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
         Ok(rows.rows_affected() > 0)
     }
 }

@@ -15,7 +15,11 @@ pub trait UserStore: Send + Sync {
     async fn create(&self, phone: &str, nickname: &str, avatar: &str) -> Result<User, AppError>;
     async fn touch_login(&self, user_id: &str) -> Result<(), AppError>;
     /// 更新昵称，返回更新后的用户（不存在时返回 None）
-    async fn update_nickname(&self, user_id: &str, nickname: &str) -> Result<Option<User>, AppError>;
+    async fn update_nickname(
+        &self,
+        user_id: &str,
+        nickname: &str,
+    ) -> Result<Option<User>, AppError>;
 }
 
 /// PostgreSQL 实现
@@ -73,16 +77,23 @@ impl UserStore for PgUserStore {
     }
 
     async fn touch_login(&self, user_id: &str) -> Result<(), AppError> {
-        sqlx::query(r#"UPDATE users SET last_login_at = NOW() WHERE user_id = $1"#)
-            .bind(user_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            r#"UPDATE users SET last_login_at = NOW(), updated_at = NOW()
+               WHERE user_id = $1"#,
+        )
+        .bind(user_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    async fn update_nickname(&self, user_id: &str, nickname: &str) -> Result<Option<User>, AppError> {
+    async fn update_nickname(
+        &self,
+        user_id: &str,
+        nickname: &str,
+    ) -> Result<Option<User>, AppError> {
         let row = sqlx::query_as::<_, User>(
-            r#"UPDATE users SET nickname = $2 WHERE user_id = $1
+            r#"UPDATE users SET nickname = $2, updated_at = NOW() WHERE user_id = $1
                RETURNING user_id, phone, nickname, avatar"#,
         )
         .bind(user_id)

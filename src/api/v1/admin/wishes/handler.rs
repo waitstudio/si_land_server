@@ -1,8 +1,8 @@
 //! 管理员想看意愿查询 handler
 
 use axum::{
-    extract::{Query, State},
     Json,
+    extract::{Query, State},
 };
 
 use crate::domain::wish::StreamerWish;

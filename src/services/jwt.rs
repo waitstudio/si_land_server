@@ -4,7 +4,7 @@
 //! 签名算法 HS256，密钥从 `AppConfig.jwt_secret` 读取。
 
 use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
@@ -41,7 +41,12 @@ pub fn verify(token: &str, secret: &str) -> Result<Claims, AppError> {
         &Validation::default(),
     )
     .map(|data| data.claims)
-    .map_err(|e| AppError::new(crate::response::BizCode::Unauthorized, format!("token 无效: {e}")))
+    .map_err(|e| {
+        AppError::new(
+            crate::response::BizCode::Unauthorized,
+            format!("token 无效: {e}"),
+        )
+    })
 }
 
 /// 从 `Authorization: Bearer <token>` 提取 token

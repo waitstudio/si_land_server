@@ -76,13 +76,11 @@ impl PushTokenStore for PgPushTokenStore {
     }
 
     async fn delete(&self, user_id: &str, channel: &str) -> Result<(), AppError> {
-        sqlx::query(
-            r#"DELETE FROM user_push_tokens WHERE user_id = $1 AND channel = $2"#,
-        )
-        .bind(user_id)
-        .bind(channel)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query(r#"DELETE FROM user_push_tokens WHERE user_id = $1 AND channel = $2"#)
+            .bind(user_id)
+            .bind(channel)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 }

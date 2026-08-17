@@ -1,11 +1,11 @@
 //! 开播通知 handler
 
-use axum::{
-    extract::{Path, Query, State},
-    Extension, Json,
-};
-use axum::routing::{delete, get, post};
 use axum::Router;
+use axum::routing::{delete, get, post};
+use axum::{
+    Extension, Json,
+    extract::{Path, Query, State},
+};
 
 use crate::error::AppError;
 use crate::middleware::auth::UserId;

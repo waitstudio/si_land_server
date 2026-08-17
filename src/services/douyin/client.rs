@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 use crate::config::DouyinConfig;
 use crate::error::AppError;
 
-use super::enter_parser::{parse, EnterRoomData};
+use super::enter_parser::{EnterRoomData, parse};
 
 /// 抖音 enter 接口客户端
 pub struct DouyinEnterClient {
@@ -37,7 +37,9 @@ impl DouyinEnterClient {
     }
 
     fn browser_headers(config: &DouyinConfig) -> reqwest::header::HeaderMap {
-        use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, REFERER, USER_AGENT};
+        use reqwest::header::{
+            ACCEPT, ACCEPT_LANGUAGE, HeaderMap, HeaderValue, REFERER, USER_AGENT,
+        };
         let mut h = HeaderMap::new();
         if let Ok(v) = HeaderValue::from_str(&config.user_agent) {
             h.insert(USER_AGENT, v);
@@ -45,7 +47,10 @@ impl DouyinEnterClient {
         if let Ok(v) = HeaderValue::from_str(&config.referer) {
             h.insert(REFERER, v);
         }
-        h.insert(ACCEPT, HeaderValue::from_static("application/json, text/plain, */*"));
+        h.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, text/plain, */*"),
+        );
         h.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("zh-CN,zh;q=0.9"));
         h
     }
@@ -112,7 +117,10 @@ impl DouyinEnterClient {
         match self.query_enter(douyin_id, &ttwid).await {
             Ok(data) => Ok(data),
             Err(e) => {
-                tracing::warn!("douyin enter query failed, refreshing ttwid and retrying: {:?}", e);
+                tracing::warn!(
+                    "douyin enter query failed, refreshing ttwid and retrying: {:?}",
+                    e
+                );
                 let new_ttwid = self.refresh_ttwid().await?;
                 self.query_enter(douyin_id, &new_ttwid).await
             }
@@ -120,11 +128,7 @@ impl DouyinEnterClient {
     }
 
     /// 单次请求 enter 接口
-    async fn query_enter(
-        &self,
-        douyin_id: &str,
-        ttwid: &str,
-    ) -> Result<EnterRoomData, AppError> {
+    async fn query_enter(&self, douyin_id: &str, ttwid: &str) -> Result<EnterRoomData, AppError> {
         let cookie = format!("ttwid={}", ttwid);
 
         let resp = self

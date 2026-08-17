@@ -1,6 +1,5 @@
--- 初始建表迁移
--- 启动时由 src/services/db/migrations.rs 幂等执行（CREATE TABLE IF NOT EXISTS）
--- 本文件用于审计与版本管理
+-- 0001 初始建表：用户 / 主播 / 订阅关系
+-- 权威迁移文件，启动时由 src/services/db/migrations.rs 按文件名顺序幂等执行
 
 -- users 表：用户基础信息
 CREATE TABLE IF NOT EXISTS users (
@@ -27,8 +26,10 @@ CREATE TABLE IF NOT EXISTS streamers (
     created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
-ALTER TABLE streamers ADD COLUMN IF NOT EXISTS popularity BIGINT NOT NULL DEFAULT 0;
-CREATE INDEX IF NOT EXISTS idx_streamers_popularity ON streamers (popularity DESC, updated_at DESC);
+
+-- 热门列表索引：按人气降序，同人气按最近更新优先
+CREATE INDEX IF NOT EXISTS idx_streamers_popularity
+    ON streamers (popularity DESC, updated_at DESC);
 
 -- subscriptions 表：用户-主播订阅关系
 CREATE TABLE IF NOT EXISTS subscriptions (
@@ -36,26 +37,9 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     streamer_id    VARCHAR(64) NOT NULL,
     subscribed_at  BIGINT      NOT NULL,
     PRIMARY KEY (user_id, streamer_id),
-    FOREIGN KEY (user_id)     REFERENCES users(user_id)     ON DELETE CASCADE,
-    FOREIGN KEY (streamer_id) REFERENCES streamers(id)     ON DELETE CASCADE
+    FOREIGN KEY (user_id)     REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (streamer_id) REFERENCES streamers(id)  ON DELETE CASCADE
 );
+
 CREATE INDEX IF NOT EXISTS idx_subscriptions_streamer ON subscriptions (streamer_id);
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user     ON subscriptions (user_id, subscribed_at DESC);
-
--- updated_at 触发器
-CREATE OR REPLACE FUNCTION touch_updated_at() RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_users_updated ON users;
-CREATE TRIGGER trg_users_updated
-    BEFORE UPDATE ON users
-    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
-
-DROP TRIGGER IF EXISTS trg_streamers_updated ON streamers;
-CREATE TRIGGER trg_streamers_updated
-    BEFORE UPDATE ON streamers
-    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();

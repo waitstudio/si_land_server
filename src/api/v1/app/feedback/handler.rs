@@ -1,10 +1,8 @@
 //! 问题反馈 handler
 
-use axum::{extract::State, Extension, Json};
+use axum::{Extension, Json, extract::State};
 
-use crate::config::constants::{
-    FEEDBACK_MAX_CONTENT_LEN, FEEDBACK_MIN_CONTENT_LEN,
-};
+use crate::config::constants::{FEEDBACK_MAX_CONTENT_LEN, FEEDBACK_MIN_CONTENT_LEN};
 use crate::error::AppError;
 use crate::middleware::auth::UserId;
 use crate::response::ApiResponse;
@@ -31,10 +29,7 @@ pub async fn submit(
         )));
     }
 
-    let id = state
-        .feedback_store
-        .create(&user_id.0, content)
-        .await?;
+    let id = state.feedback_store.create(&user_id.0, content).await?;
     tracing::info!(user_id = %user_id.0, feedback_id = %id, "收到问题反馈");
 
     Ok(Json(ApiResponse::success(FeedbackResponse { id })))

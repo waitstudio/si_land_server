@@ -3,9 +3,9 @@
 //! - 公开路由（login / sms/send）：无需认证
 //! - 认证路由（auth/me / auth/nickname / streamers/* / push/*）：经过 `auth_middleware` 校验 JWT
 
+use axum::Router;
 use axum::middleware::from_fn_with_state;
 use axum::routing::{delete, get, post, put};
-use axum::Router;
 
 use crate::middleware::auth::auth_middleware;
 use crate::state::AppState;
@@ -46,7 +46,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/streamers/poll", post(streamers::poll_live))
         .route("/streamers/{id}", delete(streamers::remove_subscription))
         .route("/streamers/{id}/check-live", post(streamers::check_live))
-        .route("/streamers/{id}/subscribe", post(streamers::subscribe_by_id))
+        .route(
+            "/streamers/{id}/subscribe",
+            post(streamers::subscribe_by_id),
+        )
         // 推送凭证管理
         .merge(push::router())
         // 开播通知

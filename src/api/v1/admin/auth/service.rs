@@ -32,7 +32,9 @@ impl AdminAuthService {
             &state.config.jwt.secret,
             state.config.jwt.expires_hours,
         )?;
-        Ok(AdminLoginResponse { access_token: token })
+        Ok(AdminLoginResponse {
+            access_token: token,
+        })
     }
 
     /// 管理员用户信息

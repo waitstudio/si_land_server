@@ -61,10 +61,7 @@ impl StreamerService {
     ///
     /// 用户输入想看的主播抖音号，按 douyin_id 去重并累加想看计数，
     /// 运营据此决定是否将该主播加入热门列表。
-    pub async fn add_wish(
-        state: &AppState,
-        douyin_id: &str,
-    ) -> Result<i64, AppError> {
+    pub async fn add_wish(state: &AppState, douyin_id: &str) -> Result<i64, AppError> {
         let trimmed = douyin_id.trim();
         douyin_id::validate(trimmed)?;
         let count = state.wish_store.upsert_wish(trimmed).await?;
@@ -72,18 +69,12 @@ impl StreamerService {
     }
 
     /// 列出当前用户订阅的主播
-    pub async fn list(
-        state: &AppState,
-        user_id: &str,
-    ) -> Result<Vec<SubscriptionItem>, AppError> {
+    pub async fn list(state: &AppState, user_id: &str) -> Result<Vec<SubscriptionItem>, AppError> {
         state.subscription_store.list_subscriptions(user_id).await
     }
 
     /// 列出热门主播
-    pub async fn list_popular(
-        state: &AppState,
-        limit: i64,
-    ) -> Result<Vec<Streamer>, AppError> {
+    pub async fn list_popular(state: &AppState, limit: i64) -> Result<Vec<Streamer>, AppError> {
         state.subscription_store.list_popular(limit).await
     }
 
