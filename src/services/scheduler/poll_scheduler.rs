@@ -16,7 +16,7 @@ use crate::domain::scheduler::PollTask;
 use crate::error::AppError;
 use crate::services::douyin::live_checker::LiveChecker;
 use crate::services::notice_store::NoticeStore;
-use crate::services::notification_outbox::NotificationOutbox;
+use crate::services::notification_queue::NotificationQueue;
 use crate::services::scheduler::adaptive_interval::next_poll_at;
 use crate::services::scheduler::poll_store::PollStore;
 use crate::services::subscription_store::SubscriptionStore;
@@ -33,7 +33,7 @@ pub struct PollScheduler {
     subscription_store: Arc<dyn SubscriptionStore>,
     live_checker: Arc<dyn LiveChecker>,
     notice_store: Arc<dyn NoticeStore>,
-    notification_outbox: Arc<dyn NotificationOutbox>,
+    notification_queue: Arc<dyn NotificationQueue>,
     /// 全局并发信号量：限制同时调用抖音接口的请求数
     semaphore: Arc<Semaphore>,
 }
@@ -46,7 +46,7 @@ impl PollScheduler {
         subscription_store: Arc<dyn SubscriptionStore>,
         live_checker: Arc<dyn LiveChecker>,
         notice_store: Arc<dyn NoticeStore>,
-        notification_outbox: Arc<dyn NotificationOutbox>,
+        notification_queue: Arc<dyn NotificationQueue>,
     ) -> Self {
         let semaphore = Arc::new(Semaphore::new(cfg.poll.max_concurrency));
         Self {
@@ -55,7 +55,7 @@ impl PollScheduler {
             subscription_store,
             live_checker,
             notice_store,
-            notification_outbox,
+            notification_queue,
             semaphore,
         }
     }
@@ -217,7 +217,7 @@ impl PollScheduler {
         Ok(())
     }
 
-    /// 主播开播时先落库通知和 Outbox 事件；实际 WS/系统推送由 Worker 异步完成。
+    /// 主播开播时先落库通知并发布到 Kafka；实际 WS/系统推送由 Worker 异步完成。
     async fn notify_subscribers(
         &self,
         nickname: &str,
@@ -278,8 +278,8 @@ impl PollScheduler {
                 "created_at": notice.created_at,
                 "read": false,
             });
-            if let Err(error) = self.notification_outbox.enqueue(&user_id, payload).await {
-                tracing::error!(user_id, ?error, "创建通知 Outbox 事件失败");
+            if let Err(error) = self.notification_queue.publish(&user_id, payload).await {
+                tracing::error!(user_id, ?error, "发布通知消息失败");
             }
         }
     }

@@ -145,12 +145,6 @@ pub async fn run(pool: &PgPool) -> Result<(), AppError> {
     // 0005：问题反馈收集表
     run_0005_feedback(pool).await?;
 
-    // 0007：WebSocket 一次性 ticket
-    run_0007_ws_tickets(pool).await?;
-
-    // 0008：通知 Outbox
-    run_0008_notification_outbox(pool).await?;
-
     tracing::info!("数据库迁移完成");
     Ok(())
 }
@@ -339,47 +333,5 @@ async fn run_0005_feedback(pool: &PgPool) -> Result<(), AppError> {
     .execute(pool)
     .await
     .map_err(|e| AppError::internal(format!("创建 feedbacks 索引失败: {e}")))?;
-    Ok(())
-}
-
-async fn run_0007_ws_tickets(pool: &PgPool) -> Result<(), AppError> {
-    sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS ws_tickets (
-            ticket      VARCHAR(64) PRIMARY KEY,
-            user_id     VARCHAR(64) NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-            expires_at  TIMESTAMPTZ NOT NULL
-        )"#,
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("建表 ws_tickets 失败: {e}")))?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_ws_tickets_expiry ON ws_tickets (expires_at)")
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::internal(format!("创建 ws_tickets 索引失败: {e}")))?;
-    Ok(())
-}
-
-async fn run_0008_notification_outbox(pool: &PgPool) -> Result<(), AppError> {
-    sqlx::query(
-        r#"CREATE TABLE IF NOT EXISTS notification_outbox (
-            id              VARCHAR(64) PRIMARY KEY,
-            user_id         VARCHAR(64) NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-            payload         JSONB NOT NULL,
-            attempts        INT NOT NULL DEFAULT 0,
-            next_attempt_at BIGINT NOT NULL,
-            lease_until     BIGINT,
-            last_error      TEXT
-        )"#,
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("建表 notification_outbox 失败: {e}")))?;
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_notification_outbox_due ON notification_outbox (next_attempt_at)",
-    )
-    .execute(pool)
-    .await
-    .map_err(|e| AppError::internal(format!("创建 notification_outbox 索引失败: {e}")))?;
     Ok(())
 }

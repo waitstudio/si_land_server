@@ -1,4 +1,4 @@
-# 用 docker-compose 管理 si_land_server 依赖的基础设施（PostgreSQL + Redis）
+# 用 docker-compose 管理 si_land_server 依赖的基础设施（PostgreSQL + Redis + Kafka）
 # 启动：docker compose up -d
 # 停止：docker compose down
 # 清理数据卷：docker compose down -v
@@ -38,6 +38,40 @@ services:
       timeout: 5s
       retries: 5
 
+  # Kafka（KRaft 单节点，无 Zookeeper）：开播通知消息队列
+  # 宿主机应用连 localhost:9092，compose 内服务连 kafka:29092
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: siland-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:29093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # 开发环境压缩保留时长，避免长期堆积
+      KAFKA_LOG_RETENTION_HOURS: 24
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
 volumes:
   postgres_data:
   redis_data:
+  kafka_data:

@@ -11,8 +11,8 @@ use crate::services::douyin::live_checker::{HttpLiveChecker, LiveChecker};
 use crate::services::douyin::streamer_resolver::{HttpStreamerResolver, StreamerResolver};
 use crate::services::feedback_store::{FeedbackStore, PgFeedbackStore};
 use crate::services::notice_store::{NoticeStore, PgNoticeStore};
-use crate::services::notification_outbox::{NotificationOutbox, PgNotificationOutbox};
-use crate::services::outbox_worker::OutboxWorker;
+use crate::services::notification_queue::{KafkaNotificationQueue, NotificationQueue};
+use crate::services::notification_worker::NotificationWorker;
 use crate::services::push::bark::BarkProvider;
 use crate::services::push::provider::PushProvider;
 use crate::services::push::token_store::{PgPushTokenStore, PushTokenStore};
@@ -23,7 +23,7 @@ use crate::services::streamer_wish_store::{PgStreamerWishStore, StreamerWishStor
 use crate::services::subscription_store::{PgSubscriptionStore, SubscriptionStore};
 use crate::services::user_store::{PgUserStore, UserStore};
 use crate::services::ws_hub::WsHub;
-use crate::services::ws_ticket_store::{PgWsTicketStore, WsTicketStore};
+use crate::services::ws_ticket_store::{RedisWsTicketStore, WsTicketStore};
 
 /// 应用共享状态
 #[derive(Clone)]
@@ -45,7 +45,9 @@ pub struct AppState {
     /// WebSocket 连接管理器（实时通知）
     pub ws_hub: Arc<WsHub>,
     pub ws_ticket_store: Arc<dyn WsTicketStore>,
-    pub notification_outbox: Arc<dyn NotificationOutbox>,
+    pub notification_queue: Arc<dyn NotificationQueue>,
+    /// 通知投递 Worker（Kafka 消费者，spawn_scheduler 中启动）
+    pub notification_worker: Arc<NotificationWorker>,
 }
 
 impl AppState {
@@ -66,7 +68,8 @@ impl AppState {
         feedback_store: Arc<dyn FeedbackStore>,
         ws_hub: Arc<WsHub>,
         ws_ticket_store: Arc<dyn WsTicketStore>,
-        notification_outbox: Arc<dyn NotificationOutbox>,
+        notification_queue: Arc<dyn NotificationQueue>,
+        notification_worker: Arc<NotificationWorker>,
     ) -> Self {
         Self {
             config: Arc::new(config),
@@ -84,7 +87,8 @@ impl AppState {
             feedback_store,
             ws_hub,
             ws_ticket_store,
-            notification_outbox,
+            notification_queue,
+            notification_worker,
         }
     }
 }
@@ -124,9 +128,17 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
     }
 
     let ws_hub = Arc::new(WsHub::new());
-    let ws_ticket_store: Arc<dyn WsTicketStore> = Arc::new(PgWsTicketStore::new(pool.clone()));
-    let notification_outbox: Arc<dyn NotificationOutbox> =
-        Arc::new(PgNotificationOutbox::new(pool));
+    let ws_ticket_store: Arc<dyn WsTicketStore> =
+        Arc::new(RedisWsTicketStore::new(&config.redis.url)?);
+    let notification_queue: Arc<dyn NotificationQueue> =
+        Arc::new(KafkaNotificationQueue::new(&config.kafka)?);
+    let notification_worker = Arc::new(NotificationWorker::new(
+        &config.kafka,
+        Arc::clone(&notice_store),
+        Arc::clone(&push_token_store),
+        push_providers.clone(),
+        Arc::clone(&ws_hub),
+    )?);
 
     Ok(AppState::new(
         config,
@@ -144,7 +156,8 @@ pub async fn build_state(config: AppConfig) -> Result<AppState, AppError> {
         feedback_store,
         ws_hub,
         ws_ticket_store,
-        notification_outbox,
+        notification_queue,
+        notification_worker,
     ))
 }
 
@@ -159,16 +172,10 @@ pub fn spawn_scheduler(state: &AppState) {
         Arc::clone(&state.subscription_store),
         Arc::clone(&state.live_checker),
         Arc::clone(&state.notice_store),
-        Arc::clone(&state.notification_outbox),
+        Arc::clone(&state.notification_queue),
     ));
     tokio::spawn(scheduler.run());
 
-    let worker = Arc::new(OutboxWorker::new(
-        Arc::clone(&state.notification_outbox),
-        Arc::clone(&state.notice_store),
-        Arc::clone(&state.push_token_store),
-        state.push_providers.clone(),
-        Arc::clone(&state.ws_hub),
-    ));
-    tokio::spawn(worker.run());
+    // 通知投递 Worker：消费 Kafka notifications topic，WS/Bark 分流投递
+    tokio::spawn(state.notification_worker.clone().run());
 }

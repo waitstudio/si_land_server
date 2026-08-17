@@ -20,6 +20,7 @@ pub struct AppConfig {
     pub douyin: DouyinConfig,
     pub poll: PollConfig,
     pub push: PushConfig,
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +123,17 @@ pub struct PushConfig {
     pub timeout_secs: u64,
 }
 
+/// Kafka 配置（通知消息队列）
+#[derive(Debug, Clone)]
+pub struct KafkaConfig {
+    /// broker 地址列表，逗号分隔（如 localhost:9092）
+    pub brokers: String,
+    /// 开播通知 topic
+    pub notification_topic: String,
+    /// 通知 Worker 消费者组
+    pub group_id: String,
+}
+
 impl AppConfig {
     /// 从环境变量加载，必填项缺失返回错误
     pub fn load() -> Result<Self, AppError> {
@@ -204,6 +216,11 @@ impl AppConfig {
                 default_channel: env::or("PUSH_DEFAULT_CHANNEL", "bark"),
                 bark_base_url: env::or("PUSH_BARK_BASE_URL", "https://api.day.app"),
                 timeout_secs: env::parse_or("PUSH_TIMEOUT_SECS", 5),
+            },
+            kafka: KafkaConfig {
+                brokers: env::or("KAFKA_BROKERS", "localhost:9092"),
+                notification_topic: env::or("KAFKA_NOTIFICATION_TOPIC", "notifications"),
+                group_id: env::or("KAFKA_GROUP_ID", "siland-notifications"),
             },
         })
     }
